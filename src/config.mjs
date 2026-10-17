@@ -116,6 +116,15 @@ export function loadConfig(env = process.env) {
     // keeps the SDK default. Mains cameras ignore it, and closing the last viewer still ends the session
     // at once. Positive whole ms; anything else → default.
     streamBatteryBudgetMs: positiveInt(env.STREAM_BATTERY_BUDGET_MS),
+    // Answer /stream at once with the camera's last live keyframe, repeated every STREAM_PRIMER_MS until the
+    // live feed takes over (see stream-primer.mjs). Without it a sleeping battery camera answers too late for
+    // Home Assistant's go2rtc, which waits a fixed 5 s for the RTSP DESCRIBE reply. Default on; 0 disables.
+    streamInstantStart: env.STREAM_INSTANT_START == null ? true : truthy(env.STREAM_INSTANT_START),
+    streamPrimerMs: positiveInt(env.STREAM_PRIMER_MS) ?? 500,
+    // How many times one /stream request tries to open the camera before it fails. A failed first attempt
+    // has usually woken the camera, so a second one right after connects in a few seconds — instead of the
+    // consumer giving up and the failure backoff refusing its retry. Default 2; 1 = the old behaviour.
+    streamOpenAttempts: positiveInt(env.STREAM_OPEN_ATTEMPTS) ?? 2,
     // How long after the push /clip waits before downloading a HomeBase 2 recording, so the station has
     // finished writing it. Set it at least to the camera's clip length. Default 30s.
     clipSettleMs: env.CLIP_SETTLE_MS != null ? Number(env.CLIP_SETTLE_MS) : 30_000,
@@ -163,6 +172,8 @@ export function loadConfig(env = process.env) {
 
   const DEBUG = truthy(env.BRIDGE_DEBUG);
   const DEBUG_P2P = truthy(env.BRIDGE_DEBUG_P2P);
+  // Also handed to the per-camera stream clients (streams.mjs), which otherwise log nothing.
+  cfg.debugP2p = DEBUG_P2P;
   const dbg = (...a) => {
     if (DEBUG) console.log("[bridge:dbg]", ...a);
   };
