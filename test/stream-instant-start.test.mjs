@@ -20,6 +20,7 @@ import { loadConfig } from "../src/config.mjs";
 import { createState } from "../src/state.mjs";
 import { createLiveStillTap, lastLiveKeyframeFile } from "../src/live-still.mjs";
 import { loadPrimer } from "../src/stream-primer.mjs";
+import { PLACEHOLDER_KEYFRAME } from "../src/stream-placeholder.mjs";
 import { streamClientOptions } from "../streams.mjs";
 
 process.env.BRIDGE_STREAM_CONSUMER_LOG_MS = "0"; // no real HTTP at :1984 from the consumer probe
@@ -50,6 +51,7 @@ async function setup({ env = {}, keyframe = true } = {}) {
     EUFY_PASSWORD: "pw",
     STREAM_PRIMER_MS: "20",
     STREAM_OPEN_RETRY_PAUSE_MS: "5",
+    STREAM_PLACEHOLDER: "0", // the stand-in picture has its own tests below
     ...env,
   });
   const state = createState();
@@ -72,6 +74,7 @@ async function setup({ env = {}, keyframe = true } = {}) {
           camera: () => ({
             openReadable: async () => {
               const step = t.plan[t.opens++] ?? "feed";
+              if (step === "error") throw new Error("cloud said no");
               if (t.gate) await t.gate;
               if (step === "fail") throw new Error("P2P connect timeout");
               const feed = new PassThrough();
@@ -86,6 +89,7 @@ async function setup({ env = {}, keyframe = true } = {}) {
   const server = http.createServer((req, res) => void createHttpHandler(ctx)(req, res));
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   t.port = server.address().port;
+  t.dir = dir;
   t.close = () => {
     server.closeAllConnections();
     fs.rmSync(dir, { recursive: true, force: true });
@@ -238,7 +242,7 @@ test("a primed request keeps retrying past STREAM_OPEN_ATTEMPTS until the open b
     assert.equal(t.opens, 5);
     assert.deepEqual(t.failures, [], "no backoff armed");
     assert.ok(
-      t.log.some((l) => l.includes("open attempt 4, primed failed")),
+      t.log.some((l) => l.includes("not reachable yet") && l.includes("attempt 4, primed")),
       "logged",
     );
   } finally {
@@ -367,4 +371,117 @@ test("the primer repeats fast at first, so ffmpeg's probe ends well inside the 5
   const slow = writes.length - fast;
   assert.ok(fast >= 5, `fast phase wrote ${fast}`);
   assert.ok(slow <= 3, `slow phase wrote ${slow}`);
+});
+
+// A minimal H.265 keyframe access unit: VPS, SPS, IDR slice.
+const HEVC_KEYFRAME = Buffer.from([
+  0, 0, 0, 1, 0x40, 0x01, 0x0c, 0, 0, 0, 1, 0x42, 0x01, 0x01, 0, 0, 0, 1, 0x26, 0x01, 0xaf,
+]);
+
+test("a camera never watched here starts with the stand-in picture", async () => {
+  // Without it, the first live view of a camera times out in the consumer's 5 s DESCRIBE wait.
+  const t = await setup({ keyframe: false, env: { STREAM_PLACEHOLDER: "1" } });
+  try {
+    let release;
+    t.gate = new Promise((r) => (release = r));
+    const p = pull(t);
+    await until(
+      () => p.bytes().length >= 2 * PLACEHOLDER_KEYFRAME.length,
+      "the stand-in repeated while the camera wakes",
+    );
+    assert.ok(p.bytes().subarray(0, PLACEHOLDER_KEYFRAME.length).equals(PLACEHOLDER_KEYFRAME));
+    release();
+    await until(() => t.feeds.length === 1, "live feed opened");
+    t.feeds[0].end(Buffer.from("live"));
+    const out = await p.done;
+    assert.equal(out.ended, true);
+    assert.equal(out.bytes().subarray(-4).toString(), "live");
+    assert.ok(
+      t.log.some((l) => l.includes("stand-in picture")),
+      "logged",
+    );
+  } finally {
+    await t.close();
+  }
+});
+
+test("a kept keyframe wins over the stand-in", async () => {
+  const t = await setup({ env: { STREAM_PLACEHOLDER: "1" } });
+  try {
+    const p = pull(t);
+    await until(() => leadingKeyframes(p.bytes()) >= 1, "the kept keyframe first");
+    await until(() => t.feeds.length === 1, "live feed opened");
+    t.feeds[0].end(Buffer.from("live"));
+    await p.done;
+  } finally {
+    await t.close();
+  }
+});
+
+test("an H.265 camera behind the H.264 stand-in keeps its keyframe and makes the consumer reconnect", async () => {
+  // The consumer's ffmpeg fixed its codec on the stand-in, so H.265 cannot follow in the same response.
+  const t = await setup({ keyframe: false, env: { STREAM_PLACEHOLDER: "1" } });
+  try {
+    const p = pull(t);
+    await until(() => t.feeds.length === 1, "live feed opened");
+    t.feeds[0].write(HEVC_KEYFRAME);
+    const out = await p.done;
+    assert.equal(out.aborted, true, "the response is cut so go2rtc reconnects");
+    assert.ok(t.feeds[0].destroyed, "this request leaves the shared source");
+    const primer = await loadPrimer(t.dir, "CAM1");
+    assert.equal(primer?.codec, "hevc", "the reconnect will be primed with H.265");
+    assert.deepEqual(t.failures, [], "not a failure");
+  } finally {
+    await t.close();
+  }
+});
+
+test("STREAM_PLACEHOLDER=0 keeps the old start for a camera never watched", async () => {
+  const t = await setup({ keyframe: false, env: { STREAM_PLACEHOLDER: "0", STREAM_OPEN_ATTEMPTS: "1" } });
+  try {
+    t.plan = ["error"];
+    const out = await pull(t).done;
+    assert.equal(out.status, 502);
+  } finally {
+    await t.close();
+  }
+});
+
+test("an error other than an unreachable camera is still reported as a failed attempt, and paused after", async () => {
+  const t = await setup({
+    env: { STREAM_OPEN_ATTEMPTS: "1", STREAM_OPEN_BUDGET_MS: "60000", STREAM_OPEN_RETRY_PAUSE_MS: "80" },
+  });
+  try {
+    t.plan = ["error", "error", "feed"];
+    const started = Date.now();
+    const p = pull(t);
+    await until(() => t.feeds.length === 1, "third attempt opened the feed");
+    assert.ok(Date.now() - started >= 160, "a failure that came back at once waits out the pause");
+    t.feeds[0].end(Buffer.from("live"));
+    await p.done;
+    assert.ok(
+      t.log.some((l) => l.includes("open attempt 1, primed failed (cloud said no)")),
+      "logged",
+    );
+  } finally {
+    await t.close();
+  }
+});
+
+test("a session that took its time to fail is not followed by an extra pause", async () => {
+  const t = await setup({
+    env: { STREAM_OPEN_ATTEMPTS: "1", STREAM_OPEN_BUDGET_MS: "60000", STREAM_OPEN_RETRY_PAUSE_MS: "50" },
+  });
+  try {
+    t.plan = ["fail", "feed"];
+    t.gate = new Promise((r) => setTimeout(r, 120)); // each open takes 120 ms, longer than the pause
+    const started = Date.now();
+    const p = pull(t);
+    await until(() => t.feeds.length === 1, "second attempt opened the feed");
+    assert.ok(Date.now() - started < 120 + 120 + 50, "no pause on top of the slow failure");
+    t.feeds[0].end(Buffer.from("live"));
+    await p.done;
+  } finally {
+    await t.close();
+  }
 });
