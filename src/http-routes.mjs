@@ -377,6 +377,11 @@ export function createHttpHandler(ctx) {
         else dropClient(sn, lease);
       };
       const attempts = Math.max(1, cfg.streamOpenAttempts ?? 1);
+      // A primed request keeps its consumer fed, so it can afford to wait for a camera that takes a minute
+      // to wake (4G): it keeps retrying until the open budget is spent, not only `attempts` times. Giving up
+      // earlier would arm the failure backoff and refuse the consumer's reconnects while the camera is up.
+      const openUntil = Date.now() + (cfg.streamOpenBudgetMs ?? 0);
+      const mayRetry = (attempt) => attempt < attempts || (stopPrimer && Date.now() < openUntil);
       for (let attempt = 1; ; attempt++) {
         let lease;
         let feed;
@@ -458,10 +463,14 @@ export function createHttpHandler(ctx) {
           if (isSupersededStreamClient(e)) return fail(503, { error: String(e?.message ?? e) });
           const reason = String(e?.message ?? e);
           // A failed attempt has usually woken a sleeping camera (it answers the cloud lookup only once it is
-          // up), so try once more at once — on a fresh session — before failing the request.
-          if (attempt < attempts && !gone) {
-            ctx.eventLog?.(`/stream ${sn} → open attempt ${attempt}/${attempts} failed (${reason}) — trying again`);
+          // up), so try again at once — on a fresh session — before failing the request.
+          if (mayRetry(attempt) && !gone) {
+            const of = attempt < attempts ? `${attempt}/${attempts}` : `${attempt}, primed`;
+            ctx.eventLog?.(`/stream ${sn} → open attempt ${of} failed (${reason}) — trying again`);
             dropFailed(lease);
+            // Past the attempts, pause between tries: a failure that comes back at once (cloud error) would
+            // otherwise spin for the whole budget.
+            if (attempt >= attempts) await new Promise((r) => setTimeout(r, cfg.streamOpenRetryPauseMs ?? 1000));
             continue;
           }
           // Arm backoff so the next go2rtc retry doesn't wake the radio again — once per lease.
