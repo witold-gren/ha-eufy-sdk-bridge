@@ -260,3 +260,40 @@ test("stream clients log the P2P transport under BRIDGE_DEBUG_P2P", () => {
   const on = loadConfig({ EUFY_EMAIL: "x@y.z", EUFY_PASSWORD: "pw", BRIDGE_DEBUG_P2P: "1" });
   assert.ok(streamClientOptions(on.cfg).logger, "a logger is attached");
 });
+
+test("a feed that dies before its first bytes is retried, and the primer keeps the consumer fed meanwhile", async () => {
+  // A reused session whose camera went back to sleep: openReadable returns, the start command goes
+  // unanswered, then the feed fails. The request must not die with it while a retry can still work.
+  const t = await setup();
+  try {
+    const p = pull(t);
+    await until(() => t.feeds.length === 1, "first feed opened");
+    const before = leadingKeyframes(p.bytes());
+    await new Promise((r) => setTimeout(r, 60));
+    assert.ok(leadingKeyframes(p.bytes()) > before, "the primer keeps going while the open feed is silent");
+    t.feeds[0].destroy(new Error("start unacknowledged"));
+    await until(() => t.feeds.length === 2, "retried on a fresh session");
+    assert.deepEqual(t.dropped, ["CAM1"], "the failed session was dropped");
+    t.feeds[1].end(Buffer.from("live"));
+    const out = await p.done;
+    assert.equal(out.ended, true);
+    assert.equal(out.bytes().subarray(-4).toString(), "live");
+    assert.deepEqual(t.failures, []);
+  } finally {
+    await t.close();
+  }
+});
+
+test("without a primer, a feed that ends before its first bytes answers 502", async () => {
+  const t = await setup({ keyframe: false, env: { STREAM_OPEN_ATTEMPTS: "1" } });
+  try {
+    const p = pull(t);
+    await until(() => t.feeds.length === 1, "feed opened");
+    t.feeds[0].end();
+    const out = await p.done;
+    assert.equal(out.status, 502);
+    assert.deepEqual(t.failures, ["CAM1"]);
+  } finally {
+    await t.close();
+  }
+});

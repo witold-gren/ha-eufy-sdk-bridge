@@ -25,6 +25,36 @@ const GO2RTC_API_PORT = Number(process.env.GO2RTC_API_PORT) || 1984;
 // `0` disables the probe; the immediate-requester line still logs on every request.
 const STREAM_CONSUMER_LOG_MS = Number(process.env.BRIDGE_STREAM_CONSUMER_LOG_MS ?? 15000);
 
+/**
+ * The feed's first chunk, with the feed paused so pipe() picks up from the next one. Resolves null when the
+ * viewer (`res`) leaves first; rejects when the feed fails or ends before sending anything.
+ */
+function firstChunk(feed, res) {
+  return new Promise((resolve, reject) => {
+    const settle = (fn, value) => {
+      feed.off("data", onData);
+      feed.off("error", onError);
+      feed.off("end", onEnd);
+      feed.off("close", onEnd);
+      res.off("close", onLeft);
+      fn(value);
+    };
+    const onData = (chunk) => {
+      feed.pause();
+      settle(resolve, chunk);
+    };
+    const onError = (e) => settle(reject, e);
+    const onEnd = () => settle(reject, new Error("the live feed ended before its first frame"));
+    const onLeft = () => settle(resolve, null);
+    feed.on("error", onError);
+    feed.on("end", onEnd);
+    feed.on("close", onEnd);
+    res.on("close", onLeft);
+    if (res.destroyed) return onLeft(); // left while the feed was opening
+    feed.on("data", onData);
+  });
+}
+
 export function createHttpHandler(ctx) {
   const { cfg, eufy, SCHEMA_VERSION, eventImageDir } = ctx;
   // Per-camera P2P client for /stream. Production uses the module cache in streams.mjs; ctx may
@@ -349,6 +379,7 @@ export function createHttpHandler(ctx) {
       const attempts = Math.max(1, cfg.streamOpenAttempts ?? 1);
       for (let attempt = 1; ; attempt++) {
         let lease;
+        let feed;
         try {
           lease = openStreamClient(sn, cfg); // its OWN P2P session — see streams.mjs
           const client = await lease;
@@ -359,14 +390,18 @@ export function createHttpHandler(ctx) {
           // The battery budget only takes effect when this call opens the session, which it does: the stream
           // client is dedicated to /stream (stills go through the control client), so nothing opens it first.
           const budget = cfg.streamBatteryBudgetMs;
-          const feed = await cam.openReadable(budget ? { batteryBudgetMs: budget } : undefined); // Annex-B
+          feed = await cam.openReadable(budget ? { batteryBudgetMs: budget } : undefined); // Annex-B
+          // An open feed is not a live one yet: on a reused session whose camera went back to sleep, the start
+          // command can go unanswered for 20 s and then fail. Keep the primer going until the first live bytes,
+          // and treat a feed that dies before them like a failed open (retried below).
+          const first = await firstChunk(feed, res);
           stopPrimer?.();
           res.off("close", onGone);
-          ctx.noteStreamOpened?.(sn); // reachable again → clear any failure backoff
-          if (gone) {
+          if (gone || !first) {
             feed.destroy(); // detaches from the shared live source, so it can stop
             return;
           }
+          ctx.noteStreamOpened?.(sn); // reachable again → clear any failure backoff
           let feeds = openFeeds.get(sn);
           if (!feeds) openFeeds.set(sn, (feeds = new Set()));
           // `peers` lets the idle sweep close every open request for this camera, not only this one.
@@ -381,10 +416,12 @@ export function createHttpHandler(ctx) {
           activeStreams.set(sn, entry);
           rtspLastActive.set(sn, Date.now()); // a live stream counts as activity for the rtspStream auto-off
           if (!res.headersSent) res.writeHead(200, { "content-type": "video/H264", "cache-control": "no-cache" });
+          res.write(first);
           feed.pipe(res);
           // Remember the stream's latest keyframe so the still can show what was last SEEN, not only the
           // last event — without ever waking the camera for it (see live-still.mjs).
           const still = createLiveStillTap({ sn, dir: eventImageDir, log: ctx.eventLog ?? (() => {}) });
+          still.onChunk(first);
           feed.on("data", still.onChunk);
           let cleanedUp = false;
           const cleanup = () => {
@@ -415,6 +452,7 @@ export function createHttpHandler(ctx) {
           feed.on("close", cleanup);
           return;
         } catch (e) {
+          feed?.destroy();
           // Our client was dropped (or the bridge is shutting down) before its login finished: nothing was
           // opened and the camera did not fail, so neither arm the backoff nor drop the client that replaced it.
           if (isSupersededStreamClient(e)) return fail(503, { error: String(e?.message ?? e) });
