@@ -4,10 +4,10 @@
 // go2rtc gets its RTSP DESCRIBE reply within its fixed 5 s while a battery camera wakes. A camera nobody has
 // watched through this bridge has no such keyframe, and its first live view timed out before the camera
 // answered. This keyframe fills that gap: one H.264 IDR (640x360, baseline, SPS+PPS in band, so it decodes on
-// its own) showing a dark screen with "Budzenie kamery…". Generated once with:
+// its own) showing a dark screen with "Waking up the camera…". Generated once with:
 //
 //   ffmpeg -f lavfi -i "color=c=0x1c1c1c:s=640x360:d=1" \
-//     -vf "drawtext=text='Budzenie kamery…':fontcolor=0xbbbbbb:fontsize=28:x=(w-text_w)/2:y=(h-text_h)/2" \
+//     -vf "drawtext=text='Waking up the camera…':fontcolor=0xbbbbbb:fontsize=28:x=(w-text_w)/2:y=(h-text_h)/2" \
 //     -frames:v 1 -c:v libx264 -profile:v baseline -pix_fmt yuv420p -x264-params keyint=1:repeat-headers=1 \
 //     -bsf:v h264_mp4toannexb -f h264 placeholder.h264
 //
@@ -29,29 +29,35 @@ export const PLACEHOLDER_KEYFRAME = Buffer.from(
     "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
     "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
     "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-    "XXX//w4UBJwAGfERhvUEQtKI2z8esqTBmsmGlgJhTp+eAAeYRfCHGKFHZKenkDRobjY75bvH1rjPYCtGxV8hzf7TcW0o9QvJKwPl",
-    "d/fUH//8IV/A0AEAUByZ4DiEciYDgPADOTP/g+BRngA/TCEt6Bu3tXsAEZVs9EjNYJRVjAr2cY9nwtHviNF7APn4aUPCU4f/cP8M",
-    "HhXirppqniABAYKZYAIyps9EjNV1IDCrUQUpv/3wWFeATKtnokZrSuFpVAr3II/WFHacESr/3gSq5jMVdxI77//usK/wAXY/iOzu",
-    "GAHPzCOQ/HKGuX4ArlplwyIyhPf10QG9+ABhSDLJTCEpY100P8/wglqHONn92GPDwAUDkyuqkpWr3mERETACKY00GNEuO9t/8Vzw",
-    "rwboYuw94ySQ/AO3BjNmqoVvW6XTW63av//h4U4ATwRIUUb57V7/wAJ5WZsgSFKz/4vuEK+wo0tOAVNUBBdgJqJIpbAfO+wI2LW1",
-    "znCmLBhrcif8b/6pxhXgTlKeg2lgm/fgGiAOAFAI/ABzISl4KeyIfz/4BgcK8BZ6mJHgNpbSP+158CM0gfaG9/2Dnh3ygYRG++BK",
-    "mK1Icjxgbe//7rCv8AF+8Ahk6k0kFHXYNUD1ncbYzgFaWppzBMon/7/6cXhXz3O1YVEAcoDgEB7A6YRv+Dm9M/4AlcmB14XObCf/",
-    "PxhXyhJUADBOAc/7p+AC5ncYEQ4HEP3A7DlK2MANH3ZQU11111111111111111111111///CSnVNAybsFQJ2J/GKIQIMwF+BNdQ7",
-    "kRyz8x695Nkj+Nu5inT/VecAMoIUMQVLf1dvVPwvKQOqgU6rpap743//0PLCFYPZMlmyHG7wZhMKVIpTvff/wchR1pMeX//+3END",
-    "wLi8sbwtne6tNuQX7R88H2y1OPV3/NEvAq2vrvd3nfa7iNl+HXRQLHKb/+3AVXMsA8sKh//YyJmyHv/AAu9nkFcwUW99+ociRg78",
-    "Rvar962Iz/9vkxeO0hB/ewbV7q+7pp44q4aF27vv8gAIA+MjP+n2UAvoffvAzYSZ1qtp4rzGg2QXO7wVLZek7FmXoQ1xYoZdBg3h",
-    "Z15N5fY2gOtWup+tpF2oNNRzx/k4Bgz5NEYFERVhi9xNf/xD4cIS+QghUHDbQBldLOzP/wCYYqPkJEz/gZqNMNzw4Mrf9B5noAxJ",
-    "U/n0De7I7aMJ/3vwjCE+PubEBiy0X006XjwABAb+tANhE4+C6YvmPT7VBWxR1Sw+f4DYHgNS2C0dXwYf8iX5hhSABDKsz0LKuoVa",
-    "m205vZpdDu2itEksIs5tXWujD5EbgAv6D3bGo//7hyU7nNj/nsHFkTHo9S4zgRAqVXxxBSKtZ+cc1Mf7hYUcV+WdqgD8vpitmfK1",
-    "05Pb2/8HS7xELo3v0NE2fRU3r/uBbSfDDE9u0K6uTPN5SkmEAaAKmfIV0W39G8HzZ6CcOUJ3b/w4h4BwhKgrIzw2AYdMvBTAYPKR",
-    "evbEH5iK+4jSCKkdlG1/BnQShUV7RNJrR2p30UA1uDZLl3AUaspHUvdhuaZwlplmjUJ7b8ZQRTutb8grMFDjsmu5/whIs8PhO+T4",
-    "jR40ppn4FXDzECeVVn/oiWZiFLM9rhV5dmT+cFu5dmY8IVp2l3AsyKHUhIS5dg5e2GD6gatRFlP8w2OdH1tCXWgGLxD3fnZ/8lan",
-    "/fgCRayMZm/HUGH/1jMIQqXVFBv6Kt7BEL/AI5GTCVxlekWt4fGqHz3yD4xDLJSeMIlo96B//z/wQFAy2Pi7jMepVa/6gjrrrrrr",
-    "rrrrrrrrrrrrrrrrrrrrrrrrrrvvvv7jL/8PAiAASOPCfEcwtqeqWCpXCfxCLtB+4I7666666666666666666666666666666666",
-    "6666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666",
-    "6666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666",
-    "6666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666",
-    "6666666666666666666666666666666666666666666666666666666666666666666666666666668=",
+    "X/iNNATFAm4AEMpZnokZr6bHDS0eaVMHk/sLc8oCe//gYtXowDzoZ/9z6+wUta+ADYlL4IhqUXwNvJxo0V9+ABhRFPpRHFrcAql0",
+    "gs2Dp/fQuIo+451x0dmBijr3+xkCH2mJS3fmfAg9wiz/sGF5XxlyKWYP9ow387n86vicK/gasPxkKNvl8f/AO8Islji97LwsxEW4",
+    "Zr/4AhuTc2YSH+tvHCHweL4AYb0TNavA7Ck9BVnMbr2RMbqA+ABel7PEEx72dAf6cBnKHBDWX72/8vrF+AA2mZgyJFOGPQUHfc1J",
+    "GB08HjXEf/7saSpSkMgGAIAYmBwdIaJgAQjD6CVe4mTACr/7rphX38g7HKNvPgIZUnBkSBD9+9+AB65h1Ngh4sg/9t/8VxwrwPyG",
+    "d5A7xlmKBFBibqLgdvFY8AGAARCZ///gh4GAACAPgABAITP/8cBhXgOAIMFuJgwACAEamYcAIAUOoAF20EhjMIs8hX79/8D+CDgu",
+    "M06AIJtWwCpMn5Q0esEv/+LwrgOAeADgKTICgjdwQww4NtQOQQikzBzgGuRQATJ1eBHGDs8IekH///46pF8AQIQQuB8SRc39FAKH",
+    "dGxNVK2K4Ti2aeZLnvmEWMRaMEfS94A5unxHsTd/8BwOFfpqtj7DQ96vgHzCyqoDmowO/zAaWcF4RV8/7Dae1s2EZ97//8EJeAAh",
+    "fw84zr1WhZMW/+K8IVJ7sRFP4cUMkk/wMMwBFs4Cfx/2Ed0T8SOBUPPSgoyQ13P/gvwrxQstc47QCVWzBQ5dw1efgAUkfEeABsq8",
+    "AAQFn/3XEIV+7ROWwooqCr/AD4vUci5TYRZnewAs1AU9MEG/gBNRjiLchjOT/59whX7dJ82cCb+xj19tgXlKN0pE/zM5RRD4MVZo",
+    "jf/X3hXgbSmZBpuhr9+AAcW1DA6p8Ac994CgiU9hxQqivvf/cMFhXgkOKevTHMj3vAmTHbzhxkRYZnOq//eCEpmCPdxOOeUE9ddd",
+    "dddddddddddddddf6InzaMKAoB3rC6KK728EeB4zSHf+BlmFLSt5SUawMDWX17zxjsPtN739GtJvY+9VjUGmaI3i2clqHZ1E3ugX",
+    "kEtG6z6thHmvHU/yx1WDcaKxf3qpzGtURn81Jv0AQJrX/67fQQqRJdAoyCvjLPyR9NtVBmzwf92SD054Xzn/q+//qW7IBA9uPmP1",
+    "IX/wrG5p+yzIgCYCEA9zMM/qPwYTZJgxb2QJ5OLJmyZbSWYUZSlf/l/gU4SV4nCwy//h/8SmeAH74AInM8gJDnJINtExjwQI0f9J",
+    "LWzDsQRtzY/n7jt2tOZTH++jRdeG745Kd/K7Xn/of8ZbSct/x/nhgEE3MASGHTOEU91b/9z/wDt8KA0VDJwCSOVLOzCkkmShywNJ",
+    "Ssv6CmHewij5TgD+e4g+aU/9kFY8mPEZ6b/52H5kLbYuAAAZ/8GcRk+RxSaftAWwp1UZDd+mqSlnKaCj64N7HZBXp/zvg8dmt4I3",
+    "t//9FDCnhHZSnAFM4mzzFI2AvMwKSOPq77f//fCfGceATKdM4ExIlDOoi2J1/7/wAqFlJhkyS97ayAAcAHpFPwIPwnD3P0YDsLCO",
+    "mMlhnMev9BPkYSQv3S/cJFdDdauYT/gw/x6QNe/v2U+uABEC+LLZoyh7UzC0JOd1fgOkh9ZQ6FUy/9sPgOAQlMIMRaYNvy8lAEkY",
+    "qWGAujJn0ds4OB8R7ydeiBAsf3lwBTTJAAuJGB7MitN+au+MgnimAAEB0BmBimlBx1KF738H4Kd3I0Yj982cK8oDS91/ioqwlv/u",
+    "Am0FClIFWfLitv/9v5whTvbEDkeJ2kyQyFG3bAjNuE9WKiieh44Myq+qdwH//AW48+8IYTdYAMSjC52Hw6uinAeviDAVH11jJ7uL",
+    "a97glITI9cYbnf+6FMBeNxkzuwvJrIjHnr/wcfEIcIm4ikf1n5kMlA6QVeoefxxUsYCA5pCZ5gThGpn30UBYVbo3/0++NseQzKgy",
+    "vD/DxDDCUHaQWkdLOzJgAERJKYH4NtfMNeKnCHHn5HExiYlzfrDDOekNetP8IkuAktI2xeaJDwu3HCjO/dgbOllkGiM//ANsElmU",
+    "pWzv++EtwjgMTu1kCiFMXnv+YzgTWiKj7/MAI5jUwPg1hG0KPWG64YquJZ/ysN3JDiJd/A2jH9aYQ9ZlgAwljNOVF79uLg352DDt",
+    "v+cQUirUfl3Cjn5CVB+Xcq5xiAYDsTB3po1HvduyNNCVyL4edGgWOck/+W348UjsKlff8P/DhCvwAXCLCUFgk2wKr/gANvFS8iAu",
+    "kmsAqH/6h+CApaoADbyMGVEHaWeOGMNQS1111111111111111111111/0j/w+CCBjSZwThcIvNf3z//CRFQLypMQA8v/gRg978/v",
+    "fUEv6N/8PgiABeE82osq/pz1jWtmNSGJvDJBGGuuuuuu+++uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu",
+    "uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu",
+    "uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu",
+    "uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu",
+    "uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuvA",
   ].join(""),
   "base64",
 );
