@@ -5,8 +5,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { streamClientFor, dropStreamClient, isSupersededStreamClient } from "../streams.mjs";
-import { createLiveStillTap } from "./live-still.mjs";
+import { createLiveStillTap, keyframeCodec, lastLiveKeyframeFile } from "./live-still.mjs";
+import { openLiveFeed } from "./live-feed.mjs";
 import { loadPrimer, startPrimer } from "./stream-primer.mjs";
+import { PLACEHOLDER_CODEC, PLACEHOLDER_KEYFRAME } from "./stream-placeholder.mjs";
 import { onBatteryPower } from "./power.mjs";
 import { storedThumbnailSeenAt } from "./stored-thumbnail.mjs";
 import { redactSecrets } from "./redact.mjs";
@@ -24,6 +26,13 @@ const GO2RTC_API_PORT = Number(process.env.GO2RTC_API_PORT) || 1984;
 // Throttle the go2rtc consumer probe per device (a stream can be re-requested on a tight retry loop).
 // `0` disables the probe; the immediate-requester line still logs on every request.
 const STREAM_CONSUMER_LOG_MS = Number(process.env.BRIDGE_STREAM_CONSUMER_LOG_MS ?? 15000);
+
+/** True for the SDK's "the station's P2P session never connected" (StationUnreachableError / session timeout). */
+function isUnreachable(e) {
+  return (
+    e?.name === "StationUnreachableError" || /did not connect within|P2P connect timeout/.test(String(e?.message ?? e))
+  );
+}
 
 /**
  * The feed's first chunk, with the feed paused so pipe() picks up from the next one. Resolves null when the
@@ -111,6 +120,46 @@ export function createHttpHandler(ctx) {
     } catch {
       /* go2rtc API unreachable — the immediate-requester line is the fallback */
     }
+  }
+
+  // How many consumers go2rtc lists for a stream, or null when go2rtc cannot be asked (disabled, not ready).
+  async function go2rtcConsumerCount(sn) {
+    if (ctx.go2rtcConsumerCount) return ctx.go2rtcConsumerCount(sn); // tests
+    try {
+      const r = await fetch(`http://127.0.0.1:${GO2RTC_API_PORT}/api/streams?src=${encodeURIComponent(sn)}`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      if (!r.ok) return null;
+      const data = await r.json();
+      return (data?.consumers ?? data?.[sn]?.consumers ?? []).filter(Boolean).length;
+    } catch {
+      return null;
+    }
+  }
+
+  // A battery camera's stream reached its budget (see live-feed.mjs): keep it going while someone still
+  // watches, up to STREAM_BATTERY_MAX_MS. Not extending lets the SDK stop the stream after its grace.
+  async function onStreamBudget(sn, notice, res) {
+    if (res.destroyed) return; // this viewer left; another request on the same camera may still extend
+    const starts = [...(openFeeds.get(sn) ?? [])].map((e) => e.startedAt);
+    const streamedMs = starts.length ? Date.now() - Math.min(...starts) : 0;
+    const secs = (ms) => `${Math.round(ms / 1000)}s`;
+    if (cfg.streamBatteryMaxMs > 0 && streamedMs >= cfg.streamBatteryMaxMs) {
+      ctx.eventLog?.(
+        `/stream ${sn} → battery budget not extended: streaming for ${secs(streamedMs)}, the cap is ${secs(cfg.streamBatteryMaxMs)} (STREAM_BATTERY_MAX_MS)`,
+      );
+      return;
+    }
+    const consumers = await go2rtcConsumerCount(sn);
+    if (consumers === 0) {
+      ctx.eventLog?.(`/stream ${sn} → battery budget not extended: go2rtc lists no viewer`);
+      return;
+    }
+    if (res.destroyed) return;
+    notice.extend(cfg.streamBatteryBudgetMs); // undefined → another full SDK budget
+    ctx.eventLog?.(
+      `/stream ${sn} → battery budget extended (${consumers == null ? "viewer unknown — go2rtc not asked" : `${consumers} viewer(s)`}, streaming for ${secs(streamedMs)})`,
+    );
   }
 
   // Log every /stream request's IMMEDIATE requester (IP + UA). Normally that's go2rtc's own ffmpeg on
@@ -353,13 +402,17 @@ export function createHttpHandler(ctx) {
       res.once("close", onGone);
       // Instant start: answer now with the last live keyframe, repeated until the live feed takes over, so
       // the consumer's RTSP DESCRIBE does not time out while the camera wakes (see stream-primer.mjs).
-      const primer = cfg.streamInstantStart ? await loadPrimer(eventImageDir, sn) : null;
+      // A camera never watched here has no kept keyframe: it starts with the stand-in picture instead. Only
+      // where live keyframes are kept — an H.265 camera recovers from the H.264 stand-in through that file.
+      let primer = cfg.streamInstantStart ? await loadPrimer(eventImageDir, sn) : null;
+      if (!primer && cfg.streamInstantStart && cfg.streamPlaceholder && eventImageDir)
+        primer = { au: PLACEHOLDER_KEYFRAME, codec: PLACEHOLDER_CODEC, placeholder: true };
       let stopPrimer;
       if (primer && !gone) {
         res.writeHead(200, { "content-type": "video/H264", "cache-control": "no-cache" });
         stopPrimer = startPrimer(res, primer.au, { intervalMs: cfg.streamPrimerMs });
         ctx.eventLog?.(
-          `/stream ${sn} → answered at once with the last live picture (${primer.au.length}B, ${primer.codec}) while the camera wakes`,
+          `/stream ${sn} → answered at once with ${primer.placeholder ? "a stand-in picture (no live picture kept yet)" : "the last live picture"} (${primer.au.length}B, ${primer.codec}) while the camera wakes`,
         );
       }
       // An answer once the stream is primed can no longer be a status code: end the response instead, so
@@ -380,22 +433,26 @@ export function createHttpHandler(ctx) {
       // A primed request keeps its consumer fed, so it can afford to wait for a camera that takes a minute
       // to wake (4G): it keeps retrying until the open budget is spent, not only `attempts` times. Giving up
       // earlier would arm the failure backoff and refuse the consumer's reconnects while the camera is up.
-      const openUntil = Date.now() + (cfg.streamOpenBudgetMs ?? 0);
+      const openStartedAt = Date.now();
+      const openUntil = openStartedAt + (cfg.streamOpenBudgetMs ?? 0);
       const mayRetry = (attempt) => attempt < attempts || (stopPrimer && Date.now() < openUntil);
       for (let attempt = 1; ; attempt++) {
         let lease;
         let feed;
+        const attemptStartedAt = Date.now();
         try {
           lease = openStreamClient(sn, cfg); // its OWN P2P session — see streams.mjs
           const client = await lease;
           const dev = await client.getDevice(sn);
           const cam = dev.camera?.();
-          if (!cam?.openReadable) return fail(404, { error: "no live video on this device" });
+          if (!cam?.live && !cam?.openReadable) return fail(404, { error: "no live video on this device" });
           if (gone) return stopPrimer?.(); // don't wake the camera for a viewer that already left
           // The battery budget only takes effect when this call opens the session, which it does: the stream
           // client is dedicated to /stream (stills go through the control client), so nothing opens it first.
           const budget = cfg.streamBatteryBudgetMs;
-          feed = await cam.openReadable(budget ? { batteryBudgetMs: budget } : undefined); // Annex-B
+          feed = await openLiveFeed(cam, budget ? { batteryBudgetMs: budget } : undefined, {
+            onBudget: (notice) => void onStreamBudget(sn, notice, res),
+          }); // Annex-B
           // An open feed is not a live one yet: on a reused session whose camera went back to sleep, the start
           // command can go unanswered for 20 s and then fail. Keep the primer going until the first live bytes,
           // and treat a feed that dies before them like a failed open (retried below).
@@ -404,6 +461,20 @@ export function createHttpHandler(ctx) {
           res.off("close", onGone);
           if (gone || !first) {
             feed.destroy(); // detaches from the shared live source, so it can stop
+            return;
+          }
+          // The stand-in picture is H.264, and the consumer's ffmpeg fixed its codec on it: an H.265 camera
+          // cannot follow in this response. Keep its keyframe and end the response; go2rtc reconnects at once,
+          // is primed with the right codec, and joins the still-warm stream (the source lingers a few seconds).
+          const liveCodec = keyframeCodec(first);
+          if (primer?.placeholder && liveCodec && liveCodec !== PLACEHOLDER_CODEC) {
+            if (eventImageDir)
+              await fs.promises.writeFile(lastLiveKeyframeFile(eventImageDir, sn), first).catch(() => {});
+            ctx.eventLog?.(
+              `/stream ${sn} → live video is ${liveCodec}, not the stand-in's ${PLACEHOLDER_CODEC} — reconnecting with it`,
+            );
+            feed.destroy();
+            res.destroy();
             return;
           }
           ctx.noteStreamOpened?.(sn); // reachable again → clear any failure backoff
@@ -464,13 +535,25 @@ export function createHttpHandler(ctx) {
           const reason = String(e?.message ?? e);
           // A failed attempt has usually woken a sleeping camera (it answers the cloud lookup only once it is
           // up), so try again at once — on a fresh session — before failing the request.
+          // A session the camera has not answered yet. On 4G that is the normal wake: the camera is up after a
+          // few seconds, but the cloud goes on handing out its address from before it slept for another ~30 s,
+          // and the SDK gives each session 15 s to connect. It is waiting, not failing: say so, and start the
+          // next session right away (this one has already closed itself).
+          const waking = stopPrimer && isUnreachable(e);
           if (mayRetry(attempt) && !gone) {
             const of = attempt < attempts ? `${attempt}/${attempts}` : `${attempt}, primed`;
-            ctx.eventLog?.(`/stream ${sn} → open attempt ${of} failed (${reason}) — trying again`);
+            if (waking) {
+              const secs = Math.round((Date.now() - openStartedAt) / 1000);
+              ctx.eventLog?.(
+                `/stream ${sn} → camera not reachable yet after ${secs}s (attempt ${of}) — still waiting for it`,
+              );
+            } else ctx.eventLog?.(`/stream ${sn} → open attempt ${of} failed (${reason}) — trying again`);
             dropFailed(lease);
             // Past the attempts, pause between tries: a failure that comes back at once (cloud error) would
-            // otherwise spin for the whole budget.
-            if (attempt >= attempts) await new Promise((r) => setTimeout(r, cfg.streamOpenRetryPauseMs ?? 1000));
+            // otherwise spin for the whole budget. One that took longer (a session that waited its 15 s) has
+            // paused already.
+            const rest = (cfg.streamOpenRetryPauseMs ?? 1000) - (Date.now() - attemptStartedAt);
+            if (attempt >= attempts && rest > 0) await new Promise((r) => setTimeout(r, rest));
             continue;
           }
           // Arm backoff so the next go2rtc retry doesn't wake the radio again — once per lease.
