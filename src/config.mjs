@@ -124,7 +124,7 @@ export function loadConfig(env = process.env) {
     // How many times one /stream request tries to open the camera before it fails. A failed first attempt
     // has usually woken the camera, so a second one right after connects in a few seconds — instead of the
     // consumer giving up and the failure backoff refusing its retry. Default 2; 1 = the old behaviour.
-    streamOpenAttempts: positiveInt(env.STREAM_OPEN_ATTEMPTS) ?? 2,
+    streamOpenAttempts: positiveInt(env.STREAM_OPEN_ATTEMPTS) ?? 3,
     // How long after the push /clip waits before downloading a HomeBase 2 recording, so the station has
     // finished writing it. Set it at least to the camera's clip length. Default 30s.
     clipSettleMs: env.CLIP_SETTLE_MS != null ? Number(env.CLIP_SETTLE_MS) : 30_000,

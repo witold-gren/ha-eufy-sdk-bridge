@@ -177,7 +177,7 @@ test("STREAM_INSTANT_START=0 ignores a kept keyframe", async () => {
 });
 
 test("a primed stream whose open finally fails is aborted, and arms the backoff once", async () => {
-  const t = await setup();
+  const t = await setup({ env: { STREAM_OPEN_ATTEMPTS: "2" } });
   try {
     t.plan = ["fail", "fail"];
     t.gate = new Promise((r) => setTimeout(r, 100)); // a real failed connect takes 15 s, not 0
@@ -208,7 +208,7 @@ test("a failed first open is retried at once on a fresh session", async () => {
     assert.deepEqual(t.dropped, ["CAM1"], "the failed session was dropped");
     assert.deepEqual(t.failures, [], "a request that succeeded arms no backoff");
     assert.ok(
-      t.log.some((l) => l.includes("open attempt 1/2 failed")),
+      t.log.some((l) => l.includes("open attempt 1/3 failed")),
       "logged",
     );
   } finally {
@@ -296,4 +296,18 @@ test("without a primer, a feed that ends before its first bytes answers 502", as
   } finally {
     await t.close();
   }
+});
+
+test("the primer repeats fast at first, so ffmpeg's probe ends well inside the 5 s DESCRIBE deadline", async () => {
+  const { startPrimer } = await import("../src/stream-primer.mjs");
+  const writes = [];
+  const res = { destroyed: false, writableEnded: false, write: (b) => void writes.push(Date.now()) };
+  const stop = startPrimer(res, KEYFRAME, { intervalMs: 200, fastMs: 10, fastForMs: 100 });
+  await new Promise((r) => setTimeout(r, 100));
+  const fast = writes.length;
+  await new Promise((r) => setTimeout(r, 300));
+  stop();
+  const slow = writes.length - fast;
+  assert.ok(fast >= 5, `fast phase wrote ${fast}`);
+  assert.ok(slow <= 3, `slow phase wrote ${slow}`);
 });
