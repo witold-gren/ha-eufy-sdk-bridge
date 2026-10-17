@@ -6,7 +6,8 @@
 //   wake, so the response must start with the kept keyframe and keep repeating it until the live feed arrives.
 // - Without a kept keyframe (never watched) or with the feature off, /stream behaves as before.
 // - A primed response cannot turn into a 502 any more: a final failure aborts it, and still arms the backoff.
-// - A failed first open usually woke the camera, so one more attempt on a fresh session follows at once.
+// - A failed first open usually woke the camera, so one more attempt on a fresh session follows at once; a
+//   primed request goes on retrying for the open budget (a 4G camera can need over a minute).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -44,7 +45,13 @@ async function until(cond, what) {
 async function setup({ env = {}, keyframe = true } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "instant-start-"));
   if (keyframe) fs.writeFileSync(lastLiveKeyframeFile(dir, "CAM1"), KEYFRAME);
-  const config = loadConfig({ EUFY_EMAIL: "x@y.z", EUFY_PASSWORD: "pw", STREAM_PRIMER_MS: "20", ...env });
+  const config = loadConfig({
+    EUFY_EMAIL: "x@y.z",
+    EUFY_PASSWORD: "pw",
+    STREAM_PRIMER_MS: "20",
+    STREAM_OPEN_RETRY_PAUSE_MS: "5",
+    ...env,
+  });
   const state = createState();
   state.flags.ready = true;
   const t = { state, feeds: [], opens: 0, clients: 0, dropped: [], failures: [], plan: [], gate: null, log: [] };
@@ -177,7 +184,7 @@ test("STREAM_INSTANT_START=0 ignores a kept keyframe", async () => {
 });
 
 test("a primed stream whose open finally fails is aborted, and arms the backoff once", async () => {
-  const t = await setup({ env: { STREAM_OPEN_ATTEMPTS: "2" } });
+  const t = await setup({ env: { STREAM_OPEN_ATTEMPTS: "2", STREAM_OPEN_BUDGET_MS: "1" } });
   try {
     t.plan = ["fail", "fail"];
     t.gate = new Promise((r) => setTimeout(r, 100)); // a real failed connect takes 15 s, not 0
@@ -211,6 +218,56 @@ test("a failed first open is retried at once on a fresh session", async () => {
       t.log.some((l) => l.includes("open attempt 1/3 failed")),
       "logged",
     );
+  } finally {
+    await t.close();
+  }
+});
+
+test("a primed request keeps retrying past STREAM_OPEN_ATTEMPTS until the open budget is spent", async () => {
+  // A 4G camera can need over a minute to wake; giving up after the attempts would arm the backoff and
+  // refuse the consumer's reconnects just as the camera comes up.
+  const t = await setup({ env: { STREAM_OPEN_ATTEMPTS: "1", STREAM_OPEN_BUDGET_MS: "60000" } });
+  try {
+    t.plan = ["fail", "fail", "fail", "fail", "feed"];
+    const p = pull(t);
+    await until(() => t.feeds.length === 1, "the fifth attempt opened the feed");
+    t.feeds[0].end(Buffer.from("live"));
+    const out = await p.done;
+    assert.equal(out.ended, true);
+    assert.equal(out.bytes().subarray(-4).toString(), "live");
+    assert.equal(t.opens, 5);
+    assert.deepEqual(t.failures, [], "no backoff armed");
+    assert.ok(
+      t.log.some((l) => l.includes("open attempt 4, primed failed")),
+      "logged",
+    );
+  } finally {
+    await t.close();
+  }
+});
+
+test("a primed request gives up once the open budget is spent", async () => {
+  const t = await setup({ env: { STREAM_OPEN_ATTEMPTS: "1", STREAM_OPEN_BUDGET_MS: "150" } });
+  try {
+    t.plan = Array(1000).fill("fail");
+    const started = Date.now();
+    const out = await pull(t).done;
+    assert.equal(out.aborted, true);
+    assert.ok(Date.now() - started >= 150, "retried for the whole budget");
+    assert.ok(t.opens > 1);
+    assert.deepEqual(t.failures, ["CAM1"]);
+  } finally {
+    await t.close();
+  }
+});
+
+test("without a primer the open budget does not apply", async () => {
+  const t = await setup({ keyframe: false, env: { STREAM_OPEN_ATTEMPTS: "2", STREAM_OPEN_BUDGET_MS: "60000" } });
+  try {
+    t.plan = ["fail", "fail", "feed"];
+    const out = await pull(t).done;
+    assert.equal(out.status, 502);
+    assert.equal(t.opens, 2);
   } finally {
     await t.close();
   }

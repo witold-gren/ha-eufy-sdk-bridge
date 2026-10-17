@@ -123,8 +123,13 @@ export function loadConfig(env = process.env) {
     streamPrimerMs: positiveInt(env.STREAM_PRIMER_MS) ?? 500,
     // How many times one /stream request tries to open the camera before it fails. A failed first attempt
     // has usually woken the camera, so a second one right after connects in a few seconds — instead of the
-    // consumer giving up and the failure backoff refusing its retry. Default 2; 1 = the old behaviour.
+    // consumer giving up and the failure backoff refusing its retry. Default 3; 1 = the old behaviour.
     streamOpenAttempts: positiveInt(env.STREAM_OPEN_ATTEMPTS) ?? 3,
+    // A request already answered with the kept keyframe (instant start) goes on retrying past
+    // STREAM_OPEN_ATTEMPTS until this long after it started: a 4G camera can need over a minute to wake, and
+    // the consumer keeps watching the kept picture meanwhile. Default 90s; 1 = attempts only.
+    streamOpenBudgetMs: positiveInt(env.STREAM_OPEN_BUDGET_MS) ?? 90_000,
+    streamOpenRetryPauseMs: positiveInt(env.STREAM_OPEN_RETRY_PAUSE_MS) ?? 1000, // between budget retries
     // How long after the push /clip waits before downloading a HomeBase 2 recording, so the station has
     // finished writing it. Set it at least to the camera's clip length. Default 30s.
     clipSettleMs: env.CLIP_SETTLE_MS != null ? Number(env.CLIP_SETTLE_MS) : 30_000,
