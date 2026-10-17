@@ -12,6 +12,11 @@
 // This is a workaround at the wrong layer; the right fix is session-per-stream INSIDE the SDK, after
 // which this whole file collapses to reusing the one control client.
 import { EufyMega, FileSessionStore, LoginStatus, ConsoleLogger } from "@mega-yfue/eufy-sdk";
+import { installWidePunch } from "./src/p2p-punch.mjs";
+
+// Opt-in: punch wider for cameras behind carrier NAT (see src/p2p-punch.mjs). Patches the SDK class, so every
+// P2P session in the process — control and stream clients alike — gets it.
+installWidePunch(Number(process.env.P2P_PUNCH_SPREAD ?? 0));
 
 // sn -> entry. An entry wraps one client's login; callers await its `lease`. The lease is cached, not the
 // finished client: two first calls for one camera (e.g. an ffmpeg retry overlapping the first pull while the
