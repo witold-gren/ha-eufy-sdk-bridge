@@ -7,8 +7,9 @@
 // "i/o timeout". The picture then only appears on a second try, while the camera is still awake.
 //
 // So /stream starts with the camera's last live keyframe (kept by live-still.mjs from the previous viewing)
-// and repeats it until the live feed takes over: ffmpeg learns the codec in well under a second, DESCRIBE is
-// answered, and the repeats keep the consumer's frame-read deadline (also 5 s) from expiring meanwhile. The
+// and repeats it until the live feed takes over — fast at first, so ffmpeg finishes probing and DESCRIBE is
+// answered within about two seconds, then slowly, which keeps the consumer's frame-read deadline (also 5 s)
+// from expiring meanwhile. The
 // viewer sees the last picture, then the live one. A keyframe carries its own parameter sets, so each repeat
 // decodes on its own; go2rtc's `#async` re-stamps frames from the wall clock, so repeats need no timestamps.
 import fs from "node:fs";
@@ -27,20 +28,34 @@ export async function loadPrimer(dir, sn) {
 }
 
 /**
- * Write `au` to `res` now and every `intervalMs` until the returned stop() is called. Writes stop by
- * themselves once the response is gone. The response's headers must already be sent.
+ * Write `au` to `res` now and repeatedly until the returned stop() is called: every `fastMs` for the first
+ * `fastForMs`, then every `intervalMs`. Writes stop by themselves once the response is gone. The response's
+ * headers must already be sent.
+ *
+ * The fast phase is what gets DESCRIBE answered in time: go2rtc's ffmpeg publishes only once
+ * avformat_find_stream_info is done, and for raw H.264 that waits for ~20 frames or 5 s of (wall-clock)
+ * timestamps. At one frame per 500 ms that is 5 s — exactly the consumer's DESCRIBE deadline, so the start
+ * became a race. Ten frames a second finish the probe in about two seconds; afterwards a slow repeat is
+ * enough to keep the consumer's frame-read deadline from expiring.
  */
-export function startPrimer(res, au, { intervalMs = 500 } = {}) {
+export function startPrimer(res, au, { intervalMs = 500, fastMs = 100, fastForMs = 3000 } = {}) {
   const write = () => {
     if (!res.destroyed && !res.writableEnded) res.write(au);
   };
   write();
-  const timer = setInterval(write, intervalMs);
+  let timer = setInterval(write, Math.min(fastMs, intervalMs));
   timer.unref?.();
+  const slowDown = setTimeout(() => {
+    clearInterval(timer);
+    timer = setInterval(write, intervalMs);
+    timer.unref?.();
+  }, fastForMs);
+  slowDown.unref?.();
   let stopped = false;
   return () => {
     if (stopped) return;
     stopped = true;
+    clearTimeout(slowDown);
     clearInterval(timer);
   };
 }
