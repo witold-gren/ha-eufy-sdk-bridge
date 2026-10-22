@@ -298,6 +298,19 @@ the crop. _(Requires auth.)_
 // ←  { "id": 8, "ok": true, "changed": true }   // changed=false when no newer image is available yet
 ```
 
+### `screen.take`
+
+Take a **fresh still from the camera now** and keep it as its **last screen** (`GET /last-screen/<sn>`,
+`/snapshot?mode=screen`), then broadcast `lastScreenUpdated`. Backs a manual "Take Screenshot" control.
+A battery camera is woken for it (10-20 s), so give the call a long timeout. The bridge never calls this
+on a timer; besides this command, only watching the camera live updates the last screen. On failure
+(no picture, not a camera) the previous last screen is kept and nothing is broadcast. _(Requires auth.)_
+
+```jsonc
+// →  { "id": 9, "cmd": "screen.take", "sn": "EXAMPLE-CAM-0001" }
+// ←  { "id": 9, "ok": true, "bytes": 48213 }
+```
+
 ### `config.get` / `config.set`
 
 Read or change the **cloud poll interval** (`pollMs`, milliseconds) at runtime — how often the bridge
