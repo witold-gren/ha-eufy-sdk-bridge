@@ -4,6 +4,7 @@
 // kicked off after `ready` so they don't hold up serving.
 import { spawn } from "node:child_process";
 import { writeGo2rtcConfig } from "../go2rtc-config.mjs";
+import { startParamWatch } from "./param-watch.mjs";
 
 /**
  * One-shot boot diagnostic: print each camera's station + P2P channel so a same-model collision is
@@ -119,6 +120,14 @@ export function createBoot(ctx) {
       if (cfg.streamIdleMs) timers.streamIdle ??= setInterval(() => ctx.streamIdleTick(), 30_000);
       if (cfg.rtspIdleOffMs) timers.rtspIdle ??= setInterval(() => void ctx.rtspIdleSweep(), 60_000);
       console.log(`[bridge] ready — ${summaries.length} devices, ${cams.length} camera stream(s)`);
+      // Diagnostics only (PARAM_WATCH): log raw cloud param changes of chosen devices.
+      if (cfg.paramWatch && typeof eufy.inspectDevice === "function")
+        timers.paramWatch ??= startParamWatch({
+          spec: cfg.paramWatch,
+          intervalMs: cfg.paramWatchMs,
+          inspect: (sn) => eufy.inspectDevice(sn),
+          cameras: () => cams,
+        });
       await logCameraChannelMap(eufy, cams).catch(() => {});
       ctx.broadcast({ event: "ready", schemaVersion: SCHEMA_VERSION });
       // Both read the P2P DB via a shared `dbChunk` stream — run sequentially so their accumulators don't

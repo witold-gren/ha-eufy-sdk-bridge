@@ -7,6 +7,7 @@ import path from "node:path";
 import { streamClientFor, dropStreamClient, isSupersededStreamClient } from "../streams.mjs";
 import { createLiveStillTap, keyframeCodec, lastLiveKeyframeFile } from "./live-still.mjs";
 import { openLiveFeed } from "./live-feed.mjs";
+import { serveLiveAudio } from "./live-audio.mjs";
 import { loadPrimer, startPrimer } from "./stream-primer.mjs";
 import { PLACEHOLDER_CODEC, PLACEHOLDER_KEYFRAME } from "./stream-placeholder.mjs";
 import { onBatteryPower } from "./power.mjs";
@@ -407,6 +408,17 @@ export function createHttpHandler(ctx) {
       }
       res.writeHead(200, { "content-type": "video/mp4", "content-length": clip.mp4.length });
       return res.end(clip.mp4);
+    }
+
+    // Live audio as a second go2rtc source (see live-audio.mjs): joins the camera's live /stream session,
+    // never opens or wakes the camera itself.
+    if (kind === "audio" && sn) {
+      if (!cfg.streamAudio) return json(res, 404, { error: "live audio is off (STREAM_AUDIO=0)" });
+      return serveLiveAudio(res, sn, {
+        activeEntry: () => activeStreams.get(sn),
+        waitMs: Math.max(60_000, (cfg.streamOpenBudgetMs ?? 0) + 30_000),
+        log: ctx.eventLog ?? (() => {}),
+      });
     }
 
     if (kind === "stream" && sn) {

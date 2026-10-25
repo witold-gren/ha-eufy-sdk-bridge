@@ -128,6 +128,11 @@ export function loadConfig(env = process.env) {
     // A camera with no kept keyframe yet (never watched through this bridge) starts with a stand-in picture
     // instead (stream-placeholder.mjs), so its first live view does not time out either. Default on; 0 = off.
     streamPlaceholder: env.STREAM_PLACEHOLDER == null ? true : truthy(env.STREAM_PLACEHOLDER),
+    // Live audio: go2rtc gets /audio/<sn> as a second source of each camera (live-audio.mjs). On by default.
+    streamAudio: env.STREAM_AUDIO == null ? true : truthy(env.STREAM_AUDIO),
+    // Diagnostics: serials (or "all") whose raw cloud params are logged on change (src/param-watch.mjs).
+    paramWatch: env.PARAM_WATCH || "",
+    paramWatchMs: Number(env.PARAM_WATCH_MS) > 0 ? Number(env.PARAM_WATCH_MS) : 20_000,
     // How many times one /stream request tries to open the camera before it fails. A failed first attempt
     // has usually woken the camera, so a second one right after connects in a few seconds — instead of the
     // consumer giving up and the failure backoff refusing its retry. Default 3; 1 = the old behaviour.
