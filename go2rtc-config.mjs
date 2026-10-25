@@ -26,8 +26,14 @@ export async function writeGo2rtcConfig(cfg, devices) {
     `  listen: ":${cfg.go2rtcWebrtcPort ?? 8555}"`,
     "ffmpeg:",
     '  eufy_h264: "-analyzeduration 0 -probesize 32768 -f h264 -i {input}"',
-    "streams:",
   ];
+  // The live-audio source is raw ADTS AAC over HTTP. Two things go2rtc 1.9.9 needs, both found by running
+  // it against a fake /audio (2026-10-23):
+  //  - the format named (`-f aac`) — probed, ffmpeg analysed for seconds and go2rtc dropped the producer;
+  //  - a re-encode (`#audio=aac` / `#audio=opus`), not `#audio=copy`: copied ADTS has no AAC config, and
+  //    RTSP refuses it ("AAC with no global headers is currently not supported"), so the source failed.
+  if (cfg.streamAudio) lines.push('  eufy_audio: "-fflags nobuffer -flags low_delay -f aac -i {input}"');
+  lines.push("streams:");
   for (const d of cams) {
     // A stream id per camera serial; the source is this bridge's own HTTP feed.
     // `#async` makes ffmpeg stamp frames from the wall clock (-use_wallclock_as_timestamps 1 -async 1)
@@ -39,7 +45,17 @@ export async function writeGo2rtcConfig(cfg, devices) {
     // Use a named template: inline {input} is interpreted as a go2rtc source replacement.
     const input = ["T8400", "T8410"].includes(d.model) ? "#input=eufy_h264" : "";
     for (const view of d.views ?? [{ id: d.sn, stream: d.stream }]) {
-      lines.push(`  ${view.id}: ffmpeg:http://${cfg.selfHost}:${cfg.port}${view.stream}#video=copy#async${input}`);
+      const video = `ffmpeg:http://${cfg.selfHost}:${cfg.port}${view.stream}#video=copy#async${input}`;
+      if (!cfg.streamAudio || view.stream !== d.stream) {
+        lines.push(`  ${view.id}: ${video}`);
+        continue;
+      }
+      // Live audio as a second source (go2rtc merges the tracks): AAC for RTSP / MSE / HLS and an Opus track
+      // for WebRTC, which has no AAC. The audio source never wakes the camera — it
+      // joins the video's session (src/live-audio.mjs). Primary view only: the sound is the camera's.
+      lines.push(`  ${view.id}:`);
+      lines.push(`    - ${video}`);
+      lines.push(`    - ffmpeg:http://${cfg.selfHost}:${cfg.port}/audio/${d.sn}#input=eufy_audio#audio=aac#audio=opus`);
     }
   }
   const yaml = lines.join("\n") + "\n";

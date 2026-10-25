@@ -1,6 +1,7 @@
 import { unobservableMembers } from "@mega-yfue/eufy-sdk";
 import { onBatteryPower } from "./power.mjs";
 import { cameraViews, cameraView } from "./camera-views.mjs";
+import { applyReadOverrides, PARAM_OVERRIDES } from "./model-overrides.mjs";
 // The host-facing view of a device: identity + capabilities + live property values + a stream path for
 // cameras. This is the shape the WS `devices.list` / `device.state` / `device.properties` commands and
 // the go2rtc camera registration both read, so a camera is "a device describeDevice gave a `stream`",
@@ -24,6 +25,15 @@ export function createDeviceView(ctx) {
     const m = dev.describe();
     const isCamera = m.capabilities.includes("camera") || m.capabilities.includes("video");
     const station = stationOf(dev, m.sn); // {} | { stationSn }
+    const state = propertyState(dev, m.model);
+    const readings = decodedReadings(dev, m);
+    // The HA integration takes a value from decodedState (by capability) over the flat state, so a per-model
+    // override must land there too: every capability surface that carries the overridden property.
+    for (const name of Object.keys(PARAM_OVERRIDES[m.model] ?? {})) {
+      if (!(name in state)) continue;
+      for (const surface of Object.values(readings.decodedState ?? {}))
+        if (surface && typeof surface === "object" && name in surface) surface[name] = state[name];
+    }
     return {
       sn: m.sn,
       name: m.name, // owner's device name (e.g. "Dining room"), from device_name
@@ -31,8 +41,8 @@ export function createDeviceView(ctx) {
       modelName: m.modelName, // product display name (e.g. "Indoor Cam Pan & Tilt")
       codec: m.codec,
       capabilities: m.capabilities,
-      state: propertyState(dev), // live property values ({ battery: 74, motion: false, … })
-      ...decodedReadings(dev, m),
+      state, // live property values ({ battery: 74, motion: false, … })
+      ...readings,
       ...liveness(m.sn, station.stationSn), // availability facts a host turns into an online/offline verdict
       ...station, // the station it hangs off: its own serial when standalone
       stream: isCamera ? `/stream/${m.sn}` : undefined,
@@ -59,10 +69,29 @@ export function createDeviceView(ctx) {
   }
 
   /** Live property values as a flat `{ name: value }` map (reading schedules a background refresh). */
-  function propertyState(dev) {
+  function propertyState(dev, model) {
     const out = {};
-    for (const [name, pv] of Object.entries(dev.getProperties())) out[name] = pv.value;
-    return out;
+    const props = dev.getProperties();
+    for (const [name, pv] of Object.entries(props)) out[name] = pv.value;
+    // per-model raw-param fixes (model-overrides.mjs), e.g. T8151 audioRecording = param 6012; the model is
+    // passed in by the caller that already described the device (a snapshot describes it once)
+    return model
+      ? applyReadOverrides(model, props, out, (name, param, hit) => reportOverride(dev, name, param, hit))
+      : out;
+  }
+
+  // Once per device and property: is the override's raw param among the SDK's properties, with what value?
+  // (diagnostics for model-overrides.mjs — a missing param leaves the SDK's own value in place)
+  const reported = new Set();
+  function reportOverride(dev, name, param, hit) {
+    const sn = dev.describe?.()?.sn ?? dev.sn ?? "?";
+    const key = `${sn}|${name}|${hit ? String(hit.value) : "-"}`;
+    if (reported.has(key)) return;
+    reported.add(key);
+    const raw = Object.values(dev.getProperties() ?? {}).filter((p) => [1288, param].includes(p?.paramType));
+    console.log(
+      `[bridge] override ${sn} ${name} ← param ${param}: ${hit ? `${JSON.stringify(hit.value)} (as "${Object.entries(dev.getProperties()).find(([, p]) => p === hit)?.[0]}")` : "NOT among the SDK properties"}; seen raw: ${JSON.stringify(raw)}`,
+    );
   }
 
   /**

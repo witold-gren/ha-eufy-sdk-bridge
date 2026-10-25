@@ -8,6 +8,7 @@ import { SOLIX_CONTROLS, SOLIX_DISABLED } from "./solix.mjs";
 import { redactSecrets } from "./redact.mjs";
 import { cameraViews, cameraView, validView } from "./camera-views.mjs";
 import { takeScreenshot } from "./screenshot.mjs";
+import { PARAM_OVERRIDES, writeOverride } from "./model-overrides.mjs";
 
 // Commands that require an authenticated eufy session — gated in one place before dispatch. (auth.* and
 // solix.* run before this gate, so a client can drive 2FA/captcha and Solix while eufy is still pending.)
@@ -36,6 +37,17 @@ export function createWsServer(ctx, httpServer) {
   const broadcast = (obj) => {
     const s = redactSecrets(JSON.stringify(obj));
     for (const ws of clients) if (ws.readyState === ws.OPEN) ws.send(s);
+  };
+
+  // The client of a /stream that is live for `sn`, or null when none is (or its session failed meanwhile).
+  const liveClientFor = async (sn) => {
+    const lease = ctx.state.activeStreams?.get(sn)?.lease;
+    if (!lease) return null;
+    try {
+      return await lease;
+    } catch {
+      return null;
+    }
   };
 
   // The device as seen through the session of a /stream that is live for it, or null when none is.
@@ -146,7 +158,28 @@ export function createWsServer(ctx, httpServer) {
           const t0 = Date.now();
           dbg(`device.set → setProperty sn=${msg.sn} name=${msg.name} value=${JSON.stringify(msg.value)}`);
           try {
-            await eufy.setProperty(msg.sn, msg.name, msg.value);
+            // A camera that is streaming takes the write through the stream's own P2P session (connected, the
+            // camera awake) — like PTZ. The control client's session to a battery camera has usually dropped
+            // or the camera slept, and reconnecting outlasts the 15 s the SDK gives it ("did not connect").
+            const live = await liveClientFor(msg.sn);
+            const client = live ?? eufy;
+            if (live) dbg(`device.set sn=${msg.sn} name=${msg.name} via the live stream's session`);
+            // A property the SDK maps to the wrong raw param on this model goes through the fix instead.
+            const model = (await eufy.getDevice(msg.sn)).describe?.()?.model;
+            if (!(await writeOverride(client, msg.sn, model, msg.name, msg.value)))
+              await client.setProperty(msg.sn, msg.name, msg.value);
+            // the bridge's own view shows the written raw value at once (the live client's state is separate)
+            if (live)
+              (await eufy.getDevice(msg.sn).catch(() => undefined))?.applyParams?.(
+                Object.fromEntries(
+                  Object.entries(PARAM_OVERRIDES[model] ?? {})
+                    .filter(([n]) => n === msg.name)
+                    .map(([, o]) => [
+                      o.param,
+                      (msg.value === true || msg.value === 1 || msg.value === "1") !== !!o.invert ? "1" : "0",
+                    ]),
+                ),
+              );
             dbg(`device.set OK sn=${msg.sn} name=${msg.name} (${Date.now() - t0}ms)`);
           } catch (e) {
             console.error(

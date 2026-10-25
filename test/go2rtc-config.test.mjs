@@ -95,3 +95,16 @@ test("the input selection also preserves advertised optical-view paths", async (
     ),
   );
 });
+
+test("with live audio a camera gets a second, audio-only source joined to the same stream", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "go2rtc-"));
+  const file = path.join(dir, "go2rtc.yaml");
+  await writeGo2rtcConfig({ go2rtcConfig: file, selfHost: "127.0.0.1", port: 3000, streamAudio: true }, cams);
+  const yaml = fs.readFileSync(file, "utf8");
+  assert.match(yaml, /\n {2}CAM1:\n {4}- ffmpeg:http:\/\/127\.0\.0\.1:3000\/stream\/CAM1#video=copy#async\n/);
+  assert.match(yaml, /\n {4}- ffmpeg:http:\/\/127\.0\.0\.1:3000\/audio\/CAM1#input=eufy_audio#audio=aac#audio=opus\n/);
+  // the audio input template: format named, no analysis (else go2rtc drops the producer before it publishes)
+  assert.match(yaml, /\n {2}eufy_audio: "[^"]*-f aac -i \{input\}"\n/);
+  // copied ADTS has no AAC config and go2rtc's RTSP refuses it — the audio must be re-encoded
+  assert.ok(!yaml.includes("#audio=copy"), "the audio source must not copy raw ADTS");
+});
