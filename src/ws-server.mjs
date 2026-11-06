@@ -20,6 +20,7 @@ const AUTHED_COMMANDS = new Set([
   "device.action",
   "device.reboot",
   "event.refresh",
+  "screen.take",
   "light.effects",
   "config.get",
   "config.set",
