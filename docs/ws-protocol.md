@@ -516,13 +516,13 @@ and implements them; registration alone does not establish hardware support for 
 
 ### Endpoint reference
 
-| method + path           | returns                                                                                                             |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `GET /healthz`          | `{ ok, schemaVersion, bridgeId, auth: { state }, streaming: [sn,…] }` — always available (even before auth)         |
-| `GET /snapshot/<sn>`    | a JPEG still (`image/jpeg`). _Requires auth._                                                                       |
-| `GET /stream/<sn>`      | live Annex-B H.264/H.265 (`application/octet-stream`) — what go2rtc pulls. _Requires auth._                         |
-| `GET /clip/<sn>`        | the latest detection's HomeBase 2 recording (`video/mp4`). _Requires auth._                                         |
-| `GET /last-screen/<sn>` | the last picture someone watched live (`image/jpeg`, header `x-saved-at`); 404 until watched once. _Requires auth._ |
+| method + path           | returns                                                                                                                                                                                                                                                                                                            |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /healthz`          | `{ ok, schemaVersion, bridgeId, auth: { state }, streaming: [sn,…] }` — always available (even before auth)                                                                                                                                                                                                        |
+| `GET /snapshot/<sn>`    | a JPEG still (`image/jpeg`). _Requires auth._                                                                                                                                                                                                                                                                      |
+| `GET /stream/<sn>`      | live Annex-B H.264/H.265 (`application/octet-stream`) — what go2rtc pulls. _Requires auth._                                                                                                                                                                                                                        |
+| `GET /clip/<sn>`        | the latest detection's HomeBase 2 recording (`video/mp4`). _Requires auth._                                                                                                                                                                                                                                        |
+| `GET /last-screen/<sn>` | the last picture someone watched live (`image/jpeg`, header `x-saved-at`); 404 until watched once. _Requires auth._                                                                                                                                                                                                |
 | `GET /audio/<sn>`       | live audio of a camera being watched, raw ADTS AAC (`audio/aac`) — go2rtc's second source next to `/stream` (`STREAM_AUDIO`, on by default). Joins the `/stream` session, never opens or wakes the camera; primes silence until the camera's sound arrives. Only AAC-LC 16 kHz mono is passed on. _Requires auth._ |
 
 **A primed `/stream` has no error status.** With `STREAM_INSTANT_START` on (the default) the bridge answers

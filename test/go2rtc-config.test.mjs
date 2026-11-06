@@ -108,3 +108,26 @@ test("with live audio a camera gets a second, audio-only source joined to the sa
   // copied ADTS has no AAC config and go2rtc's RTSP refuses it — the audio must be re-encoded
   assert.ok(!yaml.includes("#audio=copy"), "the audio source must not copy raw ADTS");
 });
+
+test("live audio joins the primary view only, and keeps the raw H.264 input of an indoor camera", async () => {
+  const { yaml } = await generate({ streamAudio: true }, [
+    {
+      sn: "INDOOR",
+      model: "T8400",
+      stream: "/stream/INDOOR",
+      views: [
+        { id: "INDOOR", stream: "/stream/INDOOR" },
+        { id: "INDOOR_view_1", stream: "/stream/INDOOR?view=1" },
+      ],
+    },
+  ]);
+  assert.ok(
+    yaml.includes("  INDOOR:\n    - ffmpeg:http://127.0.0.1:3000/stream/INDOOR#video=copy#async#input=eufy_h264\n"),
+  );
+  assert.ok(yaml.includes("    - ffmpeg:http://127.0.0.1:3000/audio/INDOOR#input=eufy_audio#audio=aac#audio=opus\n"));
+  assert.ok(
+    yaml.includes(
+      "  INDOOR_view_1: ffmpeg:http://127.0.0.1:3000/stream/INDOOR?view=1#video=copy#async#input=eufy_h264\n",
+    ),
+  );
+});
