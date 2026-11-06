@@ -16,6 +16,15 @@ const INSTALLED = Symbol.for("eufy-bridge.p2p-punch");
 const BLOCK = 7; // the SDK covers port-3 … port+3 per call
 const PRIVATE = /^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.)/;
 
+// Temporary, for the A/B measurement: `punch.pause` turns the wide sweep off for `ms`, so the two modes can be
+// interleaved without restarting the add-on. It expires by itself, so a measurement that dies leaves it on.
+let pausedUntil = 0;
+
+/** Pause the wide sweep for `ms`; 0 resumes it at once. */
+export function pausePunch(ms, now = Date.now) {
+  pausedUntil = ms > 0 ? now() + ms : 0;
+}
+
 /** Ports to pass to the SDK's ±3 punch so that, together, they cover `port ± spread` (the centre excluded). */
 export function punchCentres(port, spread) {
   const centres = [];
@@ -33,7 +42,7 @@ export function installWidePunch(spread, proto = P2PSession.prototype, now = Dat
   const swept = new WeakMap(); // session → Map(key → last sweep time)
   proto.beginCheckCam = function (addr, socket) {
     original.call(this, addr, socket);
-    if (!addr?.host || PRIVATE.test(addr.host)) return;
+    if (!addr?.host || PRIVATE.test(addr.host) || now() < pausedUntil) return;
     let seen = swept.get(this);
     if (!seen) swept.set(this, (seen = new Map()));
     const key = `${addr.host}:${addr.port}:${socket?.address?.().port ?? ""}`;

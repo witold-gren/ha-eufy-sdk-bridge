@@ -9,6 +9,7 @@ import { redactSecrets } from "./redact.mjs";
 import { cameraViews, cameraView, validView } from "./camera-views.mjs";
 import { takeScreenshot } from "./screenshot.mjs";
 import { PARAM_OVERRIDES, writeOverride } from "./model-overrides.mjs";
+import { pausePunch } from "./p2p-punch.mjs";
 
 // Commands that require an authenticated eufy session — gated in one place before dispatch. (auth.* and
 // solix.* run before this gate, so a client can drive 2FA/captcha and Solix while eufy is still pending.)
@@ -273,6 +274,12 @@ export function createWsServer(ctx, httpServer) {
             dbg(`light.effects → ${effectsCache.length} buildable effect(s)`);
           }
           return reply({ effects: effectsCache });
+        }
+        case "punch.pause": {
+          const ms = Math.max(0, Math.min(Number(msg.ms) || 0, 300_000));
+          pausePunch(ms);
+          console.log(`[p2p-punch] ${ms ? `paused for ${ms}ms` : "resumed"}`);
+          return reply({ pausedMs: ms });
         }
         case "config.get":
           // Current effective cloud poll interval (ms). 0 means polling is disabled.

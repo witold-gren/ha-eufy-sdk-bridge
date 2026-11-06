@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { installWidePunch, punchCentres } from "../src/p2p-punch.mjs";
+import { installWidePunch, pausePunch, punchCentres } from "../src/p2p-punch.mjs";
 
 test("punchCentres tiles ±spread in ±3 blocks around the reported port", () => {
   const centres = punchCentres(37009, 10);
@@ -54,4 +54,18 @@ test("a spread of 3 or less, or a second install, changes nothing", () => {
   assert.equal(proto.beginCheckCam, original);
   assert.equal(installWidePunch(20, proto), true);
   assert.equal(installWidePunch(20, proto), false);
+});
+
+test("a paused punch keeps the SDK's own ±3 call and comes back by itself", () => {
+  const proto = fakeProto();
+  let time = 10_000;
+  const now = () => time;
+  installWidePunch(35, proto, now);
+  pausePunch(2000, now);
+  proto.beginCheckCam({ host: "8.8.8.8", port: 40000 }, undefined);
+  assert.equal(proto.calls.length, 1, "only the SDK's own call while paused");
+  time += 2001;
+  proto.beginCheckCam({ host: "8.8.8.8", port: 40000 }, undefined);
+  assert.ok(proto.calls.length > 2, "the sweep is back after the pause");
+  pausePunch(0, now);
 });
