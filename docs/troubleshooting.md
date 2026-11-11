@@ -113,6 +113,21 @@ A battery camera sleeps, and live view first has to wake it and open a session. 
 so a live view opened right after an event starts much faster. It holds the camera's radio on for
 about 28 s per event, which costs some battery.
 
+## A recorded live view plays for a few seconds only, or shows black
+
+Recordings made before 0.8.2-local.13 can do both. **A minute of video plays in three seconds**: the raw stream carries
+no timestamps, and ffmpeg numbered only the frames it read while probing at the given rate (`-framerate`); past
+them it took the camera's own timing, which some cameras fill so that each frame lasts one tick. The bridge now
+passes the rate with `-r` before the input, which numbers every frame. **Black in Safari and on iPhone or iPad**:
+H.265 recordings were written with the `hev1` tag, which Apple's players refuse; they are now written as `hvc1`.
+An old file is fixed without encoding again: `ffmpeg -i in.mp4 -c copy -tag:v hvc1 out.mp4` (for the tag);
+the timing of an old file cannot be repaired from the MP4 alone.
+
+**A still picture on iPhone or iPad while the video should move**: some cameras start a live view in a lower
+resolution (e.g. 720p) and switch to 4K a few frames later. An MP4 holds one set of parameters, the first, and
+Apple's players decode every frame by it. The recorder now starts a new file at the keyframe where the camera
+changes its picture, and keeps both files however short the first one is, so the viewing is whole and each file plays.
+
 ## Reporting a problem
 
 Please include:

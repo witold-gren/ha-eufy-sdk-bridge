@@ -126,3 +126,26 @@ test("a camera advertises its last screen, a device without video does not", asy
   const rec = await createDeviceView({ eufy, state: { streaming: new Set() } }).describeDevice("S1");
   assert.equal(rec.lastScreen, undefined);
 });
+
+test("a live session outranks the cloud's unavailable verdict (camera kept off the internet)", async () => {
+  // Dialled on the LAN (EUFY_LOCAL_ADDRESSES): the cloud never hears from it and calls it unavailable.
+  const { describeDevice } = view({
+    deviceState: () => ({ sn: "CAM1", stationSn: "CAM1" }),
+    deviceAvailability: () => ({ availability: "unavailable" }),
+    getP2pSessions: () => new Map([["CAM1", { isConnected: true }]]),
+  });
+  const rec = await describeDevice("CAM1");
+  assert.equal(rec.p2pReachable, true);
+  assert.ok(!("availability" in rec));
+});
+
+test("without a live session the cloud's unavailable verdict still stands", async () => {
+  const { describeDevice } = view({
+    deviceState: () => ({ sn: "CAM1", stationSn: "CAM1" }),
+    deviceAvailability: () => ({ availability: "unavailable" }),
+    getP2pSessions: () => new Map([["CAM1", { isConnected: false }]]),
+  });
+  const rec = await describeDevice("CAM1");
+  assert.equal(rec.availability, "unavailable");
+  assert.ok(!("p2pReachable" in rec));
+});

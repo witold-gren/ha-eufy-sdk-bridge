@@ -63,8 +63,10 @@ function fakeEufy() {
       describe: () => ({
         sn: "CAM1",
         name: "Cam",
-        model: "T8410",
-        modelName: "Indoor",
+        // A battery camera of a model with no siren at all (a T8410 is an integrated camera whose siren the bridge
+        // stands in for, see siren-probe.mjs).
+        model: "T8113",
+        modelName: "eufyCam",
         codec: "camera",
         capabilities: ["camera", "video", "battery"],
       }),

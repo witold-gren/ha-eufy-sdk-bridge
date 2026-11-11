@@ -10,6 +10,8 @@ import { cameraViews, cameraView, validView } from "./camera-views.mjs";
 import { takeScreenshot } from "./screenshot.mjs";
 import { PARAM_OVERRIDES, writeOverride } from "./model-overrides.mjs";
 import { pausePunch } from "./p2p-punch.mjs";
+import { deviceContext, hasSelfStationSiren, selfStationSirenAction, sirenProbe } from "./siren-probe.mjs";
+import { cipherProbe, downloadProbe, recordFields } from "./record-fields.mjs";
 
 // Commands that require an authenticated eufy session — gated in one place before dispatch. (auth.* and
 // solix.* run before this gate, so a client can drive 2FA/captcha and Solix while eufy is still pending.)
@@ -19,6 +21,8 @@ const AUTHED_COMMANDS = new Set([
   "device.properties",
   "device.set",
   "device.action",
+  "siren.probe",
+  "device.context",
   "device.reboot",
   "event.refresh",
   "screen.take",
@@ -199,6 +203,16 @@ export function createWsServer(ctx, httpServer) {
           const action = String(msg.action ?? "");
           const args = Array.isArray(msg.args) ? msg.args : [];
           const dev = await eufy.getDevice(msg.sn);
+          // The siren of a self-station camera the SDK does not reach yet: the confirmed wire (siren-probe.mjs).
+          const record = action === "trigger" || action === "stop" ? dev.describe() : null;
+          if (
+            record &&
+            typeof dev.siren?.()?.[action] !== "function" &&
+            hasSelfStationSiren(record, dev.stationSn ?? eufy.deviceState?.(msg.sn)?.stationSn)
+          ) {
+            dbg(`device.action → ${action} sn=${msg.sn} args=${JSON.stringify(args)} via the self-station siren wire`);
+            return reply({ result: await selfStationSirenAction(eufy, msg.sn, action, args, record.model) });
+          }
           // Capability surfaces that expose actions. Add more accessors here as needed.
           const ptz = dev.ptz?.();
           const surfaces = [
@@ -241,6 +255,36 @@ export function createWsServer(ctx, httpServer) {
             );
             throw e;
           }
+        }
+        // ── recordings on a camera's own card (sd-card.mjs) ──
+        case "sd_recordings": {
+          if (typeof msg.sn !== "string" || !msg.sn) return fail("sd_recordings needs sn");
+          const thumbnails = Array.isArray(msg.thumbnails) ? msg.thumbnails.filter((f) => typeof f === "string") : [];
+          return reply(ctx.sdRecordings(msg.sn, { refresh: msg.refresh === true, thumbnails }));
+        }
+        case "sd_sync": {
+          if (typeof msg.sn !== "string" || !msg.sn || !Array.isArray(msg.files))
+            return fail("sd_sync needs sn and files");
+          return reply({ started: true, queued: ctx.sdSync(msg.sn, msg.files) });
+        }
+        case "sd_auto": {
+          if (typeof msg.sn !== "string" || !msg.sn || typeof msg.on !== "boolean")
+            return fail("sd_auto needs sn and on");
+          return reply(ctx.sdSetAuto(msg.sn, msg.on));
+        }
+        case "sd.probe":
+          return reply(await downloadProbe(eufy, msg));
+        case "station.ciphers":
+          return reply(await cipherProbe(eufy, msg));
+        case "station.recordFields":
+          return reply(await recordFields(eufy, msg));
+        case "device.context":
+          // LOCAL TEST ONLY: what the SDK decides a device's commands by (read only, see siren-probe.mjs).
+          return reply(await deviceContext(eufy, msg.sn));
+        case "siren.probe": {
+          // LOCAL TEST ONLY: a bounded try-out of a siren wire on a self-station camera (see siren-probe.mjs).
+          const result = await sirenProbe(eufy, msg, { log: (line) => console.log(`[bridge] ${line}`) });
+          return reply(result);
         }
         case "device.reboot": {
           // HomeBase-only; SDK throws for a non-hub serial. The hub drops offline for a minute or two.
@@ -308,6 +352,20 @@ export function createWsServer(ctx, httpServer) {
         }
         case "stream.stop":
           return reply({}); // advisory; the media connection is the real signal
+
+        // ── live-view recording (opt-in per camera; see live-recorder.mjs) ──
+        case "recording.list": {
+          const recorder = ctx.liveRecorder ?? reject("live recording is not available on this bridge");
+          return reply({ enabled: recorder.list(), active: recorder.active() });
+        }
+        case "recording.set": {
+          const recorder = ctx.liveRecorder ?? reject("live recording is not available on this bridge");
+          const sn = msg.deviceSn;
+          if (typeof sn !== "string" || !sn || typeof msg.enabled !== "boolean")
+            return fail("recording.set needs { deviceSn, enabled: true|false }");
+          await recorder.setEnabled(sn, msg.enabled);
+          return reply({ deviceSn: sn, enabled: recorder.enabled(sn) });
+        }
 
         default:
           return fail(`unknown cmd: ${cmd}`);

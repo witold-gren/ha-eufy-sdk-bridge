@@ -131,6 +131,8 @@ Every device the account exposes. _(Requires `auth.state == "ok"`.)_
   live-media budget. The `battery` capability alone is not the answer: mains-only models (the T8410 above) still
   carry it.
 - `canReboot` is `true` on HomeBase/station devices, which accept `device.reboot`.
+- `canRecordLive` (cameras/doorbells only) is `true` when this bridge can record the camera's live view
+  (`recording.list` / `recording.set`). An older bridge omits it, so a host offers recording only where it works.
 - A device that failed to resolve appears as `{ "sn": "…", "error": "…" }`.
 
 #### Decoded readings (additive, schema 1)
@@ -362,6 +364,31 @@ Advisory only — the media connection closing is the real "stop". _(Requires au
 // ←  { "id": 8, "ok": true }
 ```
 
+### `recording.list` / `recording.set`
+
+Opt-in recording of a camera's **live view**. Off for every camera until switched on. The bridge never opens a
+stream for it: while a camera's primary view is watched through `/stream` (a dashboard card, Home Assistant's
+more-info dialog, HomeKit — whoever opens it), the frames it already pipes are written to
+`LIVE_RECORDING_DIR/<sn>/<YYYY-MM-DD>/<HHMMSS>-<HHMMSS>.mp4` (start and end in the container's local time,
+stream copy). A viewing shorter than ~2 s is not kept, and overlapping requests for one camera make one
+recording. A viewing longer than `LIVE_RECORDING_SPLIT_MS` (default 10 min) is kept as several files, each
+starting on a keyframe and named by its own start and end; `LIVE_RECORDING_KEEP_DAYS` deletes old ones.
+Where the live view carries sound (`/audio/<sn>`, `STREAM_AUDIO`), the camera's AAC is recorded with it,
+aligned by arrival (the sound starts when its first frame came after the part's first keyframe; a gap of over
+1 s is filled with silence). The switched-on set is kept in the data dir (`live-recording.json`) across restarts.
+
+```jsonc
+// →  { "id": 12, "cmd": "recording.list" }
+// ←  { "id": 12, "ok": true, "enabled": ["EXAMPLE-CAM-0001"], "active": [] }   // active = recording right now
+
+// →  { "id": 13, "cmd": "recording.set", "deviceSn": "EXAMPLE-CAM-0001", "enabled": true }
+// ←  { "id": 13, "ok": true, "deviceSn": "EXAMPLE-CAM-0001", "enabled": true }
+// bad request →
+{ "id": 13, "ok": false, "error": "recording.set needs { deviceSn, enabled: true|false }" }
+```
+
+Switching a camera off ends a recording in progress; what was recorded so far is kept.
+
 ### Anker Solix (`solix.*`)
 
 Optional — present only when the bridge has `SOLIX_EMAIL` / `SOLIX_PASSWORD` set. Solix is a **separate
@@ -466,6 +493,17 @@ Plus a stream-lifecycle event (not a device push):
 Fired when a camera's live P2P feed opens (`active: true`) or is torn down / idle-suspended
 (`active: false`). The device summary also carries the current value as a `streaming` boolean.
 
+And, for a camera whose live view is recorded (`recording.set`):
+
+```json
+{ "event": "recordingState", "deviceSn": "EXAMPLE-CAM…", "active": true }
+```
+
+`active: true` when the recording starts (the stream's first keyframe), `active: false` when it stops (the
+viewing ended, or recording was switched off); the file is written shortly after. A viewing split into
+several files stays `active: true` throughout — no event marks the split. `recording.list` carries the
+cameras recording right now as `active`.
+
 ---
 
 ## Sibling HTTP endpoints
@@ -516,14 +554,15 @@ and implements them; registration alone does not establish hardware support for 
 
 ### Endpoint reference
 
-| method + path           | returns                                                                                                                                                                                                                                                                                                            |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `GET /healthz`          | `{ ok, schemaVersion, bridgeId, auth: { state }, streaming: [sn,…] }` — always available (even before auth)                                                                                                                                                                                                        |
-| `GET /snapshot/<sn>`    | a JPEG still (`image/jpeg`). _Requires auth._                                                                                                                                                                                                                                                                      |
-| `GET /stream/<sn>`      | live Annex-B H.264/H.265 (`application/octet-stream`) — what go2rtc pulls. _Requires auth._                                                                                                                                                                                                                        |
-| `GET /clip/<sn>`        | the latest detection's HomeBase 2 recording (`video/mp4`). _Requires auth._                                                                                                                                                                                                                                        |
-| `GET /last-screen/<sn>` | the last picture someone watched live (`image/jpeg`, header `x-saved-at`); 404 until watched once. _Requires auth._                                                                                                                                                                                                |
-| `GET /audio/<sn>`       | live audio of a camera being watched, raw ADTS AAC (`audio/aac`) — go2rtc's second source next to `/stream` (`STREAM_AUDIO`, on by default). Joins the `/stream` session, never opens or wakes the camera; primes silence until the camera's sound arrives. Only AAC-LC 16 kHz mono is passed on. _Requires auth._ |
+| method + path           | returns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /healthz`          | `{ ok, schemaVersion, bridgeId, auth: { state }, streaming: [sn,…] }` — always available (even before auth)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `GET /snapshot/<sn>`    | a JPEG still (`image/jpeg`). _Requires auth._                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `GET /stream/<sn>`      | live Annex-B H.264/H.265 (`application/octet-stream`) — what go2rtc pulls. _Requires auth._                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `GET /clip/<sn>`        | the latest detection's HomeBase 2 recording (`video/mp4`). _Requires auth._                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `GET /last-screen/<sn>` | the last picture someone watched live (`image/jpeg`, header `x-saved-at`); 404 until watched once. _Requires auth._                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `GET /audio/<sn>`       | live audio of a camera being watched, raw ADTS AAC (`audio/aac`) — go2rtc's second source next to `/stream` (`STREAM_AUDIO`, on by default). Joins the `/stream` session, never opens or wakes the camera; primes silence until the camera's sound arrives. Only AAC-LC 16 kHz mono is passed on. _Requires auth._                                                                                                                                                                                                                                                                                                                     |
+| `POST /talk/<sn>`       | plays the request body on the camera's speaker, streamed: ADTS AAC-LC 16 kHz mono, or with `?format=s16le&rate=<8000-48000>` raw mono PCM (a browser microphone), which the bundled ffmpeg encodes. Once the camera takes the talk the answer starts at once as `application/x-ndjson`: `{"state":"connected"}`, then the outcome as the last line with its `status` - the body ending (200, `ok: true`), the client going away (499), or the camera closing the session (503). Refused before that as plain JSON: one talker per camera (409), no speaker (404), an AAC-ELD speaker (415), camera unreachable (502). _Requires auth._ |
 
 **A primed `/stream` has no error status.** With `STREAM_INSTANT_START` on (the default) the bridge answers
 `200` at once for the primary view and sends the last live keyframe while the camera wakes. A failure

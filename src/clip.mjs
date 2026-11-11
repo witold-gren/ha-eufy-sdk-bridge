@@ -8,19 +8,48 @@ import { execFile } from "node:child_process";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** Mux Annex-B H.264 (+ ADTS AAC when present) into `out` with ffmpeg, stream copy only. */
-export async function muxMp4({ video, audio, fps }, out) {
-  const inputs = [`${out}.h264`, `${out}.aac`];
-  await fs.promises.writeFile(inputs[0], video);
-  if (audio?.length) await fs.promises.writeFile(inputs[1], audio);
+/**
+ * Mux Annex-B video (+ ADTS AAC when present) into `out` with ffmpeg, stream copy only. `codec` is the
+ * elementary stream's ffmpeg demuxer: "h264" (default) or "hevc". The video comes as a Buffer (`video`) or
+ * as a file already on disk (`videoFile`, for a live recording too long to hold in memory); the audio likewise
+ * (`audio` or `audioFile`). A file passed in is left for the caller to remove, while the temporary copy of a
+ * Buffer is removed here. `audioDelayMs` starts the audio that much after the video (a live recording's
+ * sound, which began after its first keyframe).
+ */
+export async function muxMp4(
+  { video, videoFile, audio, audioFile, audioDelayMs = 0, fps, codec = "h264" },
+  out,
+  { ffmpeg = "ffmpeg", timeoutMs = 60_000 } = {},
+) {
+  const videoIn = videoFile ?? `${out}.${codec}`;
+  const audioIn = audioFile ?? `${out}.aac`;
+  const withAudio = !!audioFile || audio?.length > 0;
+  const written = []; // the temporary inputs this call made, removed when it ends
+  if (!videoFile) {
+    written.push(videoIn);
+    await fs.promises.writeFile(videoIn, video);
+  }
+  if (!audioFile && audio?.length) {
+    written.push(audioIn);
+    await fs.promises.writeFile(audioIn, audio);
+  }
   const args = ["-hide_banner", "-loglevel", "error", "-y", "-fflags", "+genpts"];
-  if (fps > 0) args.push("-framerate", String(fps));
-  args.push("-f", "h264", "-i", inputs[0]);
-  if (audio?.length) args.push("-f", "aac", "-i", inputs[1], "-map", "0:v", "-map", "1:a");
-  args.push("-c", "copy", "-movflags", "+faststart", "-f", "mp4", out);
+  // `-r` before the input makes ffmpeg number the frames at this rate. `-framerate` only covers the frames read while
+  // probing: past them the h264 parser takes the camera's VUI timing, which some cameras fill so that every later
+  // frame lasts one tick, and a minute of video plays in three seconds.
+  if (fps > 0) args.push("-r", String(fps));
+  args.push("-f", codec, "-i", videoIn);
+  if (withAudio) {
+    if (audioDelayMs > 0) args.push("-itsoffset", (audioDelayMs / 1000).toFixed(3));
+    args.push("-f", "aac", "-i", audioIn, "-map", "0:v", "-map", "1:a");
+  }
+  args.push("-c", "copy");
+  // H.265 as `hvc1`: Safari and the apps on iPhone and iPad play no other kind, and ffmpeg's default is `hev1`.
+  if (codec === "hevc") args.push("-tag:v", "hvc1");
+  args.push("-movflags", "+faststart", "-f", "mp4", out);
   try {
     await new Promise((resolve, reject) =>
-      execFile("ffmpeg", args, { timeout: 60_000 }, (e, _out, err) => {
+      execFile(ffmpeg, args, { timeout: timeoutMs }, (e, _out, err) => {
         if (!e) return resolve();
         const detail = String(err || e.message).trim();
         reject(new Error(`ffmpeg: ${detail.slice(-200)}`));
@@ -30,7 +59,7 @@ export async function muxMp4({ video, audio, fps }, out) {
     await fs.promises.rm(out, { force: true }); // no half-written file left behind
     throw e;
   } finally {
-    for (const f of inputs) await fs.promises.rm(f, { force: true });
+    for (const f of written) await fs.promises.rm(f, { force: true });
   }
 }
 

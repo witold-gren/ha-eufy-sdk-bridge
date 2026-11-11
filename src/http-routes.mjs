@@ -8,6 +8,7 @@ import { streamClientFor, dropStreamClient, isSupersededStreamClient } from "../
 import { createLiveStillTap, keyframeCodec, lastLiveKeyframeFile } from "./live-still.mjs";
 import { liveFeedOpener } from "./live-feed.mjs";
 import { serveLiveAudio } from "./live-audio.mjs";
+import { serveTalkback } from "./talkback.mjs";
 import { loadPrimer, startPrimer } from "./stream-primer.mjs";
 import { PLACEHOLDER_CODEC, PLACEHOLDER_KEYFRAME } from "./stream-placeholder.mjs";
 import { onBatteryPower } from "./power.mjs";
@@ -70,6 +71,7 @@ export function createHttpHandler(ctx) {
   const dropClient = ctx.dropStreamClient ?? dropStreamClient;
   const { flags } = ctx.state;
   const { streaming, idleSuspended, activeStreams, lastPullAttempt, rtspLastActive } = ctx.state;
+  const talking = new Set(); // cameras with a talker now: one at a time per speaker (see talkback.mjs)
   // Every /stream request owns its own entry. Requests for one camera overlap briefly when ffmpeg
   // reconnects before the old connection has closed, so each must release only its own; activeStreams
   // keeps showing one live entry per camera (the shape stream-idle.mjs reads) until the last one ends.
@@ -415,6 +417,19 @@ export function createHttpHandler(ctx) {
       }
     }
 
+    // The picture of a recording on a camera's own card (see sd-card.mjs).
+    if (kind === "sd_thumbnail" && sn) {
+      const [, , , day, name] = url.pathname.split("/");
+      const image = await ctx.sdThumbnail?.(sn, day ?? "", decodeURIComponent(name ?? ""));
+      if (!image) return json(res, 404, { error: "no picture" });
+      res.writeHead(200, {
+        "content-type": "image/jpeg",
+        "content-length": image.length,
+        "cache-control": "max-age=86400",
+      });
+      return res.end(image);
+    }
+
     // The recording a HomeBase 2 stored for this camera's latest detection, as an mp4 (see clip.mjs).
     if (kind === "clip" && sn) {
       const clip = (await ctx.clipFor?.(sn)) ?? { status: 404, error: "clips unavailable" };
@@ -426,15 +441,32 @@ export function createHttpHandler(ctx) {
       return res.end(clip.mp4);
     }
 
+    // Talkback: the request body (ADTS AAC, or ?format=s16le&rate= PCM) plays on the camera's speaker.
+    if (kind === "talk" && sn) {
+      return serveTalkback(req, res, sn, {
+        eufy,
+        talking,
+        query: url.searchParams,
+        log: ctx.eventLog ?? (() => {}),
+      });
+    }
+
     // Live audio as a second go2rtc source (see live-audio.mjs): joins the camera's live /stream session,
     // never opens or wakes the camera itself.
     if (kind === "audio" && sn) {
       if (!cfg.streamAudio) return json(res, 404, { error: "live audio is off (STREAM_AUDIO=0)" });
-      return serveLiveAudio(res, sn, {
-        activeEntry: () => activeStreams.get(sn),
-        waitMs: Math.max(60_000, (cfg.streamOpenBudgetMs ?? 0) + 30_000),
-        log: ctx.eventLog ?? (() => {}),
-      });
+      // A recorded camera's sound goes into its live-view recording too (see live-recorder.mjs).
+      const recording = ctx.liveRecorder?.audioTap?.(sn) ?? null;
+      try {
+        return await serveLiveAudio(res, sn, {
+          activeEntry: () => activeStreams.get(sn),
+          waitMs: Math.max(60_000, (cfg.streamOpenBudgetMs ?? 0) + 30_000),
+          log: ctx.eventLog ?? (() => {}),
+          onAudio: recording?.onAudio,
+        });
+      } finally {
+        recording?.finish();
+      }
     }
 
     if (kind === "stream" && sn) {
@@ -572,11 +604,20 @@ export function createHttpHandler(ctx) {
           });
           still.onChunk(first);
           feed.on("data", still.onChunk);
+          // An opted-in camera's live view is recorded as it is watched — from these frames, never a stream
+          // of its own (see live-recorder.mjs). The primer and stand-in went out before the feed, so the
+          // recording starts with the camera's own first keyframe.
+          const recording = view === 0 ? (ctx.liveRecorder?.tap(sn) ?? null) : null;
+          if (recording) {
+            recording.onChunk(first);
+            feed.on("data", recording.onChunk);
+          }
           let cleanedUp = false;
           const cleanup = () => {
             if (cleanedUp) return;
             cleanedUp = true;
             void still.flush();
+            void recording?.finish();
             feed.destroy();
             // pipe() ends the response only on a clean end. A feed that failed (P2P drop, warm-up timeout) or
             // closed early would leave ffmpeg on an open, silent socket until its own timeout — abort the

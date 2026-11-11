@@ -131,3 +131,10 @@ test("live audio joins the primary view only, and keeps the raw H.264 input of a
     ),
   );
 });
+
+test("GO2RTC_API_HOST binds go2rtc's API to one address (127.0.0.1 keeps it off the LAN)", async () => {
+  const ctx = loadConfig({ EUFY_EMAIL: "x@y.z", EUFY_PASSWORD: "pw", GO2RTC_API_HOST: "127.0.0.1" });
+  const { yaml } = await generate(ctx.cfg);
+  assert.match(yaml, /api:\n  listen: "127\.0\.0\.1:1984"\n/);
+  assert.match(yaml, /rtsp:\n  listen: ":8554"\n/); // only the API moves
+});

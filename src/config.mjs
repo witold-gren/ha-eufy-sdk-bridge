@@ -11,6 +11,21 @@ const positiveInt = (v) => {
   return v != null && v !== "" && Number.isSafeInteger(n) && n > 0 ? n : undefined;
 };
 
+/**
+ * EUFY_LOCAL_ADDRESSES — `SERIAL=host[:port]` pairs, comma- or space-separated — as the SDK's
+ * `localAddresses` map (keyed by the parent-station serial; a standalone camera is its own station).
+ * Undefined when empty, so the SDK keeps deriving every address from the device record. Entries without
+ * both a serial and a host are skipped, never half-applied.
+ */
+export function parseLocalAddresses(value) {
+  const out = {};
+  for (const pair of String(value ?? "").split(/[\s,]+/)) {
+    const [sn, host] = pair.split("=").map((part) => part?.trim());
+    if (sn && host) out[sn] = host;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 /** The SDK event names broadcast to every connected WS client. */
 export const FORWARDED_EVENTS = [
   "propertyChanged",
@@ -79,6 +94,9 @@ export function loadConfig(env = process.env) {
     // phone app under some conditions) presents the same identity and the two displace each other's
     // session / split push delivery. Set a unique value per bridge when you run more than one on an account.
     openudid: env.BRIDGE_OPENUDID || undefined,
+    // LAN addresses for direct P2P (EUFY_LOCAL_ADDRESSES="T8410P…=192.168.1.20"): for a camera kept off
+    // the internet, whose cloud record has a stale or no IP — the SDK then dials it on the LAN directly.
+    localAddresses: parseLocalAddresses(env.EUFY_LOCAL_ADDRESSES),
     go2rtcConfig: env.GO2RTC_CONFIG || "./go2rtc.yaml",
     // Toggle for the bundled go2rtc process. Useful when running go2rtc as a separate container/service
     // instead of the one bundled here. Default ON to match existing behavior; set GO2RTC_ENABLE=0 to skip
@@ -88,6 +106,9 @@ export function loadConfig(env = process.env) {
     // consumer probe all read these, so moving go2rtc off a port another go2rtc already holds (Frigate's,
     // or the go2rtc add-on beside a host-networked bridge) is one variable, not a hand-edited YAML.
     go2rtcApiPort: positiveInt(env.GO2RTC_API_PORT) ?? 1984,
+    // Address go2rtc's API binds to: empty = every interface (the default), 127.0.0.1 = this host only.
+    // The API can add `exec:` streams, so a bridge on the host network should keep it local.
+    go2rtcApiHost: env.GO2RTC_API_HOST || "",
     go2rtcRtspPort: positiveInt(env.GO2RTC_RTSP_PORT) ?? 8554,
     go2rtcWebrtcPort: positiveInt(env.GO2RTC_WEBRTC_PORT) ?? 8555,
     selfHost: env.BRIDGE_SELF_HOST || "127.0.0.1",
@@ -156,6 +177,19 @@ export function loadConfig(env = process.env) {
     // How long after the push /clip waits before downloading a HomeBase 2 recording, so the station has
     // finished writing it. Set it at least to the camera's clip length. Default 30s.
     clipSettleMs: env.CLIP_SETTLE_MS != null ? Number(env.CLIP_SETTLE_MS) : 30_000,
+    // Where recordings of watched live views are written (live-recorder.mjs), one folder per camera and day.
+    // Nothing is recorded until recording is switched on for a camera (WS `recording.set`); this only says
+    // where. A relative path resolves against the working directory. Default /media/eufy, the Home Assistant
+    // media folder as an add-on sees it when `media` is mapped read-write.
+    liveRecordingDir: path.resolve(env.LIVE_RECORDING_DIR?.trim() || "/media/eufy"),
+    // A viewing longer than this is cut into parts of this length: each part ends at the next keyframe and
+    // is kept as its own file, while the recording goes on. Default 10 min; 0 = one file per viewing.
+    // Positive whole ms; anything else → default.
+    liveRecordingSplitMs:
+      env.LIVE_RECORDING_SPLIT_MS?.trim() === "0" ? 0 : (positiveInt(env.LIVE_RECORDING_SPLIT_MS) ?? 600_000),
+    // Delete recordings once their day is more than this many days past (checked at start and hourly).
+    // Default 0 = never delete. Positive whole days; anything else → 0.
+    liveRecordingKeepDays: positiveInt(env.LIVE_RECORDING_KEEP_DAYS) ?? 0,
     // Event pre-warm: the SDK can speculatively open a camera's P2P session on a high-intent event
     // (doorbell/person/pet/package) so a following live view starts instantly. OFF by default here — it
     // holds a battery camera's radio open for ~28s per event. Set BRIDGE_PREWARM=1 to pre-warm on the four

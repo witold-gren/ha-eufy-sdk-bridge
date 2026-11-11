@@ -2,6 +2,7 @@ import { unobservableMembers } from "@mega-yfue/eufy-sdk";
 import { onBatteryPower } from "./power.mjs";
 import { cameraViews, cameraView } from "./camera-views.mjs";
 import { applyReadOverrides, PARAM_OVERRIDES } from "./model-overrides.mjs";
+import { withSelfStationSiren } from "./siren-probe.mjs";
 // The host-facing view of a device: identity + capabilities + live property values + a stream path for
 // cameras. This is the shape the WS `devices.list` / `device.state` / `device.properties` commands and
 // the go2rtc camera registration both read, so a camera is "a device describeDevice gave a `stream`",
@@ -40,7 +41,8 @@ export function createDeviceView(ctx) {
       model: m.model || m.modelName, // T-code (e.g. "T8410"); product name as fallback
       modelName: m.modelName, // product display name (e.g. "Indoor Cam Pan & Tilt")
       codec: m.codec,
-      capabilities: m.capabilities,
+      // A self-station camera whose siren wire is confirmed gets `siren` the SDK does not grant yet (siren-probe.mjs).
+      capabilities: withSelfStationSiren(m, station.stationSn),
       state, // live property values ({ battery: 74, motion: false, … })
       ...readings,
       ...liveness(m.sn, station.stationSn), // availability facts a host turns into an online/offline verdict
@@ -53,6 +55,13 @@ export function createDeviceView(ctx) {
       // also marks mains-only models.
       power: isCamera ? (onBatteryPower(m.model, m.capabilities) ? "battery" : "wired") : undefined,
       canReboot: m.codec === "station", // HomeBase-only; drives a Reboot button in HA
+      // This bridge can record the camera's live view (WS `recording.list` / `recording.set`); absent on an
+      // older bridge, so a host offers the switch only where it works.
+      canRecordLive: isCamera && ctx.liveRecorder ? true : undefined,
+      // The recordings on its own card can be listed and brought down (WS `sd_recordings` / `sd_sync`), and
+      // whether it copies them by itself after a detection (`sd_auto`); see sd-card.mjs.
+      canSdRecordings: ctx.sdCanList?.(m, station.stationSn, dev) ? true : undefined,
+      sdAuto: ctx.sdCanList?.(m, station.stationSn, dev) ? ctx.sdAutoOn(m.sn) : undefined,
     };
   }
 
@@ -118,7 +127,14 @@ export function createDeviceView(ctx) {
     const reachable =
       sessions?.get(sn)?.isConnected === true ||
       (typeof stationSn === "string" && stationSn !== sn && sessions?.get(stationSn)?.isConnected === true);
-    if (reachable) out.p2pReachable = true;
+    if (reachable) {
+      out.p2pReachable = true;
+      // A live session outranks the cloud's "unavailable": a camera kept off the internet (dialled on the
+      // LAN via EUFY_LOCAL_ADDRESSES) never reports to the cloud, which therefore calls it offline while
+      // the bridge is talking to it. The host treats an explicit observation as authoritative, so the
+      // stale verdict is dropped rather than sent next to the proof that contradicts it.
+      if (out.availability === "unavailable") delete out.availability;
+    }
     return out;
   }
 

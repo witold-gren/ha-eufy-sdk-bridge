@@ -94,6 +94,7 @@ export function createBoot(ctx) {
         eufy.on("push", (ev) => dbg(pushFieldSummary(ev)));
       }
       eufy.on("push", (ev) => ctx.noteRecording?.(ev)); // the recording a detection named, for /clip
+      eufy.on("push", (ev) => ctx.sdNotePush?.(ev)); // a camera copying its card's recordings by itself (sd-card.mjs)
       // #35 night-vision upgrade: a camera unsure at trigger time pushes `motion`, then the recording is
       // classified person. When EUFY_PERSON_FROM_RECORD is on, a `motion` push schedules a read of the
       // freshest record; if its trigger_type is the person value, re-emit `personDetected`. `recentPerson`

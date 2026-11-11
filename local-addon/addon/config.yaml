@@ -1,0 +1,128 @@
+# https://developers.home-assistant.io/docs/add-ons/configuration#add-on-configuration
+name: eufy-sdk bridge (local)
+version: "0.8.2-local.33"
+slug: eufy_sdk_bridge_local
+description: Runs the ha-eufy-sdk bridge (WS control + HTTP video + go2rtc) for the eufy-sdk HACS integration.
+url: "https://github.com/mega-yfue/ha-eufy-sdk-addon/tree/main/eufy_sdk_bridge"
+# Built locally by Supervisor (no `image:`): the official bridge image plus the patched files from the
+# witold-gren/ha-eufy-sdk-bridge fork (see Dockerfile). Run it INSTEAD of the official add-on: eufy allows
+# one session per account, and both publish the same ports.
+# Keep in sync with what the bridge publishes: amd64 + arm64 only (node:24-alpine has no armv7 base).
+arch:
+  - aarch64
+  - amd64
+init: false
+# Host network: a camera answers the LAN P2P lookup from a different port than it was asked on, and the
+# Docker NAT of an add-on network drops such a reply - so a camera kept off the internet (local_addresses)
+# never connects. On the host network there is no NAT, and the LAN broadcast lookup works too. The ports
+# below are then the host's own (3000, 8554, plus go2rtc 1984 and 8555); `ports` only documents them.
+host_network: true
+# Recorded live views (opt-in per camera, LIVE_RECORDING_DIR=/media/eufy) go to Home Assistant's media folder.
+map:
+  - media:rw
+# The entrypoint registers dynamic Supervisor discovery after reading this add-on's current network
+# mapping, so Home Assistant receives only the host plus remapped bridge and RTSP ports.
+hassio_api: true
+# Ingress fronts the bridge's WS/HTTP on :3000 and supplies the auth the raw WS lacks.
+ingress: true
+ingress_port: 3000
+panel_icon: mdi:cctv
+# Publish only the ports the Home Assistant integration consumes: bridge control and RTSP.
+ports:
+  # Bridge WS + HTTP control. Published so the eufy-sdk HACS integration can reach it directly
+  # (ingress is an HA-frontend-authenticated proxy the raw-WS client can't traverse). Point the
+  # integration at homeassistant.local:3000 (or the HA host IP). Change the host port in the add-on's
+  # Network panel if 3000 is already used.
+  3000/tcp: 3000
+  8554/tcp: 8554
+ports_description:
+  3000/tcp: Bridge WS + HTTP control (point the eufy-sdk integration here)
+  8554/tcp: RTSP
+options:
+  email: ""
+  password: ""
+  country: GB
+  # Optional tuning — these mirror the bridge's own defaults, so leaving them is a no-op.
+  poll_ms: 600000
+  stream_idle_ms: 300000
+  rtsp_idle_off_ms: 300000
+  prewarm: false
+  event_log: true
+  debug: false
+  debug_p2p: false
+  go2rtc_enable: true
+  stream_audio: true
+  param_watch: ""
+  local_addresses: []
+  # Recorded live views: deleting old ones is off unless switched on; then files older than the days go.
+  live_recording_cleanup: false
+  live_recording_keep_days: 90
+  # ── Anker Solix (optional; a SEPARATE Anker account from eufy) ──────────────────────────────────
+  # Leave email + password empty to keep Solix OFF. Fill BOTH to add the Solarbank / smart-meter
+  # entities. The rest mirror the bridge defaults, so leaving them is a no-op.
+  solix_email: ""
+  solix_password: ""
+  solix_country: ""
+  solix_scene_poll_ms: 90000
+  solix_retry_base_ms: 900000
+  solix_retry_max_ms: 3600000
+schema:
+  email: str
+  password: password
+  country: str
+  # How often the bridge re-reads device state from the cloud (ms); 0 disables polling.
+  poll_ms: int(0,)
+  # Auto-off a camera's live P2P feed after this long with no detection (ms); 0 disables. Saves battery.
+  stream_idle_ms: int(0,)
+  # Turn a BATTERY camera's native rtspStream OFF after this long idle (ms); 0 disables. Wired untouched.
+  rtsp_idle_off_ms: int(0,)
+  # How long a BATTERY camera streams before the bridge checks whether it is still watched (ms). Empty
+  # keeps the SDK default (45s). A watched stream is extended by this much again, up to
+  # stream_battery_max_ms. Mains cameras ignore it.
+  stream_battery_budget_ms: "int(1,)?"
+  # The longest one watched BATTERY stream is kept going (ms). Empty = bridge default (600000 = 10 min);
+  # 0 = no cap.
+  stream_battery_max_ms: "int(0,)?"
+  # After a live-stream open FAILS, refuse to reopen that camera for this long (ms), doubling per failure
+  # up to 5 min, so go2rtc's retries get a fast 503 instead of waking the radio. Empty = bridge default
+  # (30000); 0 disables.
+  stream_fail_backoff_ms: "int(0,)?"
+  # How a camera tile's still (/snapshot) is taken. auto (bridge default): wake MAINS cameras for a live
+  # still, serve BATTERY cameras from their last thumbnail/frame. on: always wake. off: never wake.
+  snapshot_live: "list(auto|on|off)?"
+  # How long /clip waits after a detection before downloading the HomeBase 2 recording (ms), so the
+  # station has finished writing it. Set it at least to the clip length. Empty = bridge default (30000).
+  clip_settle_ms: "int(0,)?"
+  # Speculatively open a camera's P2P on a high-intent event (doorbell/person/pet/package) so live
+  # view starts instantly. Off by default — it holds a battery camera's radio ~28s per event.
+  prewarm: bool
+  # Log one line per push/semantic event (what it is, clients reached, image fetches). On by default.
+  event_log: bool
+  # Verbose bridge logging (WS commands, control timing, P2P connect/close). Off by default.
+  debug: bool
+  # Additionally route the raw per-frame P2P transport logs (very noisy). Off by default.
+  debug_p2p: bool
+  # Run the bundled go2rtc process. Turn OFF if you run go2rtc as a separate container/service
+  # on the same host (ports 8554/1984), so the bundled one does not clash with it.
+  go2rtc_enable: bool
+  stream_audio: bool?
+  live_recording_cleanup: bool?
+  live_recording_keep_days: int(1,3650)?
+  param_watch: str?
+  param_watch_ms: int(5000,)?
+  # Cameras the bridge dials directly on the LAN: the serial (Settings -> Devices, or the camera's
+  # eufy app info) and its IP. For a camera kept off the internet, whose cloud record has a stale IP;
+  # with a live local session it shows as available although the cloud calls it offline.
+  local_addresses:
+    - serial: str
+      host: str
+  # Anker Solix account (separate from eufy). Fill BOTH email + password to enable Solix; empty = off.
+  solix_email: "str?"
+  solix_password: "password?"
+  # Two-letter Solix account country (e.g. GB, DE); empty falls back to the eufy country above.
+  solix_country: "str?"
+  # Scene backstop poll cadence (ms) — the slow authed read filling battery temp + a SOC cross-check.
+  solix_scene_poll_ms: "int(5000,)?"
+  # Login self-heal backoff: base delay then cap (ms). Anker throttles frequent logins — keep generous.
+  solix_retry_base_ms: "int(10000,)?"
+  solix_retry_max_ms: "int(10000,)?"
