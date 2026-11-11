@@ -151,6 +151,19 @@ export function loadConfig(env = process.env) {
     // How long after the push /clip waits before downloading a HomeBase 2 recording, so the station has
     // finished writing it. Set it at least to the camera's clip length. Default 30s.
     clipSettleMs: env.CLIP_SETTLE_MS != null ? Number(env.CLIP_SETTLE_MS) : 30_000,
+    // Where recordings of watched live views are written (live-recorder.mjs), one folder per camera and day.
+    // Nothing is recorded until recording is switched on for a camera (WS `recording.set`); this only says
+    // where. A relative path resolves against the working directory. Default /media/eufy, the Home Assistant
+    // media folder as an add-on sees it when `media` is mapped read-write.
+    liveRecordingDir: path.resolve(env.LIVE_RECORDING_DIR?.trim() || "/media/eufy"),
+    // A viewing longer than this is cut into parts of this length: each part ends at the next keyframe and
+    // is kept as its own file, while the recording goes on. Default 10 min; 0 = one file per viewing.
+    // Positive whole ms; anything else → default.
+    liveRecordingSplitMs:
+      env.LIVE_RECORDING_SPLIT_MS?.trim() === "0" ? 0 : (positiveInt(env.LIVE_RECORDING_SPLIT_MS) ?? 600_000),
+    // Delete recordings once their day is more than this many days past (checked at start and hourly).
+    // Default 0 = never delete. Positive whole days; anything else → 0.
+    liveRecordingKeepDays: positiveInt(env.LIVE_RECORDING_KEEP_DAYS) ?? 0,
     // Event pre-warm: the SDK can speculatively open a camera's P2P session on a high-intent event
     // (doorbell/person/pet/package) so a following live view starts instantly. OFF by default here — it
     // holds a battery camera's radio open for ~28s per event. Set BRIDGE_PREWARM=1 to pre-warm on the four

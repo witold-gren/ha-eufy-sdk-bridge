@@ -25,6 +25,18 @@ Camera summaries advertise SDK-supported optical views and their stream, snapsho
 identifiers. A secondary optic uses `?view=<view>` on the HTTP endpoints; the primary URLs stay unchanged.
 See [optical views](./docs/ws-protocol.md#optical-views) for selection, older-SDK behavior and per-view stills.
 
+### Recording the live view (opt-in)
+
+The bridge can keep a copy of what is watched: switch recording on for a camera (WS `recording.set`, or the
+**Record live view** switch in Home Assistant) and every live view of that camera — whoever opens it: a
+dashboard, the more-info dialog, HomeKit — is saved as
+`LIVE_RECORDING_DIR/<sn>/<YYYY-MM-DD>/<HHMMSS>-<HHMMSS>.mp4` (default `/media/eufy`, local time of the container).
+It records only streams that are already running, so it costs a battery camera nothing extra. Off for every
+camera by default; the folder must be writable (for the add-on: `media` mapped read-write). A long viewing is
+cut into files of `LIVE_RECORDING_SPLIT_MS` (default 10 min, each starting on a keyframe), and
+`LIVE_RECORDING_KEEP_DAYS` deletes recordings once their day is that many days past (default `0`: kept for
+good). See [`recording.set`](./docs/ws-protocol.md#recordinglist--recordingset).
+
 ## Run it
 
 Pull the published image and run it (bundles the SDK + go2rtc):

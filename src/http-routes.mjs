@@ -525,11 +525,20 @@ export function createHttpHandler(ctx) {
           const still = createLiveStillTap({ sn: source.id, dir: eventImageDir, log: ctx.eventLog ?? (() => {}) });
           still.onChunk(first);
           feed.on("data", still.onChunk);
+          // An opted-in camera's live view is recorded as it is watched — from these frames, never a stream
+          // of its own (see live-recorder.mjs). The primer and stand-in went out before the feed, so the
+          // recording starts with the camera's own first keyframe.
+          const recording = view === 0 ? (ctx.liveRecorder?.tap(sn) ?? null) : null;
+          if (recording) {
+            recording.onChunk(first);
+            feed.on("data", recording.onChunk);
+          }
           let cleanedUp = false;
           const cleanup = () => {
             if (cleanedUp) return;
             cleanedUp = true;
             void still.flush();
+            void recording?.finish();
             feed.destroy();
             // pipe() ends the response only on a clean end. A feed that failed (P2P drop, warm-up timeout) or
             // closed early would leave ffmpeg on an open, silent socket until its own timeout — abort the
