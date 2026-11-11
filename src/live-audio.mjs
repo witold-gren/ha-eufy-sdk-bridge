@@ -39,9 +39,15 @@ export function matchesPrimer(frame) {
  *  - `activeEntry()` → the /stream entry `{ lease }` while the camera is being watched, else undefined
  *  - `waitMs` — how long to wait (priming silence) for the video to go live before ending
  *  - `log(msg)`
+ *  - `onAudio(frame)` — optional, called with every frame of the camera's own sound that is served (never the
+ *    silent primer), before a slow sink may drop it; the live-view recorder takes its sound from here
  * Resolves when the response is finished.
  */
-export async function serveLiveAudio(res, sn, { activeEntry, waitMs = 120_000, log = () => {}, pollMs = 500 }) {
+export async function serveLiveAudio(
+  res,
+  sn,
+  { activeEntry, waitMs = 120_000, log = () => {}, pollMs = 500, onAudio },
+) {
   let closed = false;
   res.once("close", () => (closed = true));
   res.writeHead(200, { "content-type": "audio/aac", "cache-control": "no-cache" });
@@ -111,6 +117,7 @@ export async function serveLiveAudio(res, sn, { activeEntry, waitMs = 120_000, l
           stopSilence();
           log(`/audio ${sn} → live audio started (AAC-LC 16 kHz mono)`);
         }
+        onAudio?.(frame);
         // Audio is tiny; on a slow sink drop frames until it drains rather than buffering seconds of lag.
         if (dropping) return;
         if (!res.write(frame.data)) {

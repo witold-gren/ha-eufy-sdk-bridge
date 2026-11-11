@@ -131,6 +131,8 @@ Every device the account exposes. _(Requires `auth.state == "ok"`.)_
   live-media budget. The `battery` capability alone is not the answer: mains-only models (the T8410 above) still
   carry it.
 - `canReboot` is `true` on HomeBase/station devices, which accept `device.reboot`.
+- `canRecordLive` (cameras/doorbells only) is `true` when this bridge can record the camera's live view
+  (`recording.list` / `recording.set`). An older bridge omits it, so a host offers recording only where it works.
 - A device that failed to resolve appears as `{ "sn": "…", "error": "…" }`.
 
 #### Decoded readings (additive, schema 1)
@@ -362,6 +364,31 @@ Advisory only — the media connection closing is the real "stop". _(Requires au
 // ←  { "id": 8, "ok": true }
 ```
 
+### `recording.list` / `recording.set`
+
+Opt-in recording of a camera's **live view**. Off for every camera until switched on. The bridge never opens a
+stream for it: while a camera's primary view is watched through `/stream` (a dashboard card, Home Assistant's
+more-info dialog, HomeKit — whoever opens it), the frames it already pipes are written to
+`LIVE_RECORDING_DIR/<sn>/<YYYY-MM-DD>/<HHMMSS>-<HHMMSS>.mp4` (start and end in the container's local time,
+stream copy). A viewing shorter than ~2 s is not kept, and overlapping requests for one camera make one
+recording. A viewing longer than `LIVE_RECORDING_SPLIT_MS` (default 10 min) is kept as several files, each
+starting on a keyframe and named by its own start and end; `LIVE_RECORDING_KEEP_DAYS` deletes old ones.
+Where the live view carries sound (`/audio/<sn>`, `STREAM_AUDIO`), the camera's AAC is recorded with it,
+aligned by arrival (the sound starts when its first frame came after the part's first keyframe; a gap of over
+1 s is filled with silence). The switched-on set is kept in the data dir (`live-recording.json`) across restarts.
+
+```jsonc
+// →  { "id": 12, "cmd": "recording.list" }
+// ←  { "id": 12, "ok": true, "enabled": ["EXAMPLE-CAM-0001"], "active": [] }   // active = recording right now
+
+// →  { "id": 13, "cmd": "recording.set", "deviceSn": "EXAMPLE-CAM-0001", "enabled": true }
+// ←  { "id": 13, "ok": true, "deviceSn": "EXAMPLE-CAM-0001", "enabled": true }
+// bad request →
+{ "id": 13, "ok": false, "error": "recording.set needs { deviceSn, enabled: true|false }" }
+```
+
+Switching a camera off ends a recording in progress; what was recorded so far is kept.
+
 ### Anker Solix (`solix.*`)
 
 Optional — present only when the bridge has `SOLIX_EMAIL` / `SOLIX_PASSWORD` set. Solix is a **separate
@@ -465,6 +492,17 @@ Plus a stream-lifecycle event (not a device push):
 
 Fired when a camera's live P2P feed opens (`active: true`) or is torn down / idle-suspended
 (`active: false`). The device summary also carries the current value as a `streaming` boolean.
+
+And, for a camera whose live view is recorded (`recording.set`):
+
+```json
+{ "event": "recordingState", "deviceSn": "EXAMPLE-CAM…", "active": true }
+```
+
+`active: true` when the recording starts (the stream's first keyframe), `active: false` when it stops (the
+viewing ended, or recording was switched off); the file is written shortly after. A viewing split into
+several files stays `active: true` throughout — no event marks the split. `recording.list` carries the
+cameras recording right now as `active`.
 
 ---
 

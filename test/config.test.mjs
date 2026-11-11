@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import path from "node:path";
 import { loadConfig } from "../src/config.mjs";
 import { prewarmEventsFor, PREWARM_EVENTS } from "../src/client.mjs";
 
@@ -81,4 +82,27 @@ test("STREAM_BATTERY_MAX_MS: a malformed value keeps the safety cap, 0 removes i
   assert.equal(loadConfig({ ...base, STREAM_BATTERY_MAX_MS: "0" }).cfg.streamBatteryMaxMs, 0);
   assert.equal(loadConfig({ ...base, STREAM_BATTERY_MAX_MS: "ten minutes" }).cfg.streamBatteryMaxMs, 600_000);
   assert.equal(loadConfig({ ...base, STREAM_BATTERY_MAX_MS: "-1" }).cfg.streamBatteryMaxMs, 600_000);
+});
+
+test("LIVE_RECORDING_DIR: /media/eufy by default, an absolute path when set", () => {
+  assert.equal(loadConfig(base).cfg.liveRecordingDir, "/media/eufy");
+  assert.equal(loadConfig({ ...base, LIVE_RECORDING_DIR: "  " }).cfg.liveRecordingDir, "/media/eufy"); // blank → default
+  assert.equal(loadConfig({ ...base, LIVE_RECORDING_DIR: "/share/cams/" }).cfg.liveRecordingDir, "/share/cams");
+  assert.equal(loadConfig({ ...base, LIVE_RECORDING_DIR: "rec" }).cfg.liveRecordingDir, path.resolve("rec"));
+});
+
+test("LIVE_RECORDING_SPLIT_MS: 10 min by default, 0 never splits, a malformed value keeps the default", () => {
+  assert.equal(loadConfig(base).cfg.liveRecordingSplitMs, 600_000);
+  assert.equal(loadConfig({ ...base, LIVE_RECORDING_SPLIT_MS: "300000" }).cfg.liveRecordingSplitMs, 300_000);
+  assert.equal(loadConfig({ ...base, LIVE_RECORDING_SPLIT_MS: "0" }).cfg.liveRecordingSplitMs, 0);
+  assert.equal(loadConfig({ ...base, LIVE_RECORDING_SPLIT_MS: "ten minutes" }).cfg.liveRecordingSplitMs, 600_000);
+  assert.equal(loadConfig({ ...base, LIVE_RECORDING_SPLIT_MS: "-5" }).cfg.liveRecordingSplitMs, 600_000);
+  assert.equal(loadConfig({ ...base, LIVE_RECORDING_SPLIT_MS: "1.5" }).cfg.liveRecordingSplitMs, 600_000);
+});
+
+test("LIVE_RECORDING_KEEP_DAYS: 0 (keep for good) by default and for anything but a positive whole number", () => {
+  assert.equal(loadConfig(base).cfg.liveRecordingKeepDays, 0);
+  assert.equal(loadConfig({ ...base, LIVE_RECORDING_KEEP_DAYS: "14" }).cfg.liveRecordingKeepDays, 14);
+  for (const bad of ["0", "-3", "2.5", "week", ""])
+    assert.equal(loadConfig({ ...base, LIVE_RECORDING_KEEP_DAYS: bad }).cfg.liveRecordingKeepDays, 0, bad);
 });

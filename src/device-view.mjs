@@ -53,6 +53,9 @@ export function createDeviceView(ctx) {
       // also marks mains-only models.
       power: isCamera ? (onBatteryPower(m.model, m.capabilities) ? "battery" : "wired") : undefined,
       canReboot: m.codec === "station", // HomeBase-only; drives a Reboot button in HA
+      // This bridge can record the camera's live view (WS `recording.list` / `recording.set`); absent on an
+      // older bridge, so a host offers the switch only where it works.
+      canRecordLive: isCamera && ctx.liveRecorder ? true : undefined,
     };
   }
 

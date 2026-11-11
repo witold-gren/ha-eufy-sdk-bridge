@@ -430,11 +430,18 @@ export function createHttpHandler(ctx) {
     // never opens or wakes the camera itself.
     if (kind === "audio" && sn) {
       if (!cfg.streamAudio) return json(res, 404, { error: "live audio is off (STREAM_AUDIO=0)" });
-      return serveLiveAudio(res, sn, {
-        activeEntry: () => activeStreams.get(sn),
-        waitMs: Math.max(60_000, (cfg.streamOpenBudgetMs ?? 0) + 30_000),
-        log: ctx.eventLog ?? (() => {}),
-      });
+      // A recorded camera's sound goes into its live-view recording too (see live-recorder.mjs).
+      const recording = ctx.liveRecorder?.audioTap?.(sn) ?? null;
+      try {
+        return await serveLiveAudio(res, sn, {
+          activeEntry: () => activeStreams.get(sn),
+          waitMs: Math.max(60_000, (cfg.streamOpenBudgetMs ?? 0) + 30_000),
+          log: ctx.eventLog ?? (() => {}),
+          onAudio: recording?.onAudio,
+        });
+      } finally {
+        recording?.finish();
+      }
     }
 
     if (kind === "stream" && sn) {
@@ -572,11 +579,20 @@ export function createHttpHandler(ctx) {
           });
           still.onChunk(first);
           feed.on("data", still.onChunk);
+          // An opted-in camera's live view is recorded as it is watched — from these frames, never a stream
+          // of its own (see live-recorder.mjs). The primer and stand-in went out before the feed, so the
+          // recording starts with the camera's own first keyframe.
+          const recording = view === 0 ? (ctx.liveRecorder?.tap(sn) ?? null) : null;
+          if (recording) {
+            recording.onChunk(first);
+            feed.on("data", recording.onChunk);
+          }
           let cleanedUp = false;
           const cleanup = () => {
             if (cleanedUp) return;
             cleanedUp = true;
             void still.flush();
+            void recording?.finish();
             feed.destroy();
             // pipe() ends the response only on a clean end. A feed that failed (P2P drop, warm-up timeout) or
             // closed early would leave ffmpeg on an open, silent socket until its own timeout — abort the

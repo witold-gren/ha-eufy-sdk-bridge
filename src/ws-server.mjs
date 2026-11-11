@@ -309,6 +309,20 @@ export function createWsServer(ctx, httpServer) {
         case "stream.stop":
           return reply({}); // advisory; the media connection is the real signal
 
+        // ── live-view recording (opt-in per camera; see live-recorder.mjs) ──
+        case "recording.list": {
+          const recorder = ctx.liveRecorder ?? reject("live recording is not available on this bridge");
+          return reply({ enabled: recorder.list(), active: recorder.active() });
+        }
+        case "recording.set": {
+          const recorder = ctx.liveRecorder ?? reject("live recording is not available on this bridge");
+          const sn = msg.deviceSn;
+          if (typeof sn !== "string" || !sn || typeof msg.enabled !== "boolean")
+            return fail("recording.set needs { deviceSn, enabled: true|false }");
+          await recorder.setEnabled(sn, msg.enabled);
+          return reply({ deviceSn: sn, enabled: recorder.enabled(sn) });
+        }
+
         default:
           return fail(`unknown cmd: ${cmd}`);
       }
